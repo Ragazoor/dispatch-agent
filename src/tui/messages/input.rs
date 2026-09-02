@@ -20,7 +20,11 @@ pub enum InputMessage {
     SubmitTag(Option<TaskTag>),
     SubmitBaseBranch(String),
     SubmitWrapUpMode(Option<WrapUpMode>),
-    SubmitPhoenix(bool),
+    /// `p` at the tag picker: arm the phoenix flag and re-open the same step
+    /// for the real tag. Carries no payload — there is no message that DISARMS
+    /// the flag, because declining it is simply not pressing `p`
+    /// (CreateTask: PhoenixArming, in `docs/specs/tasks.allium`).
+    ArmPhoenix,
     InputChar(char),
     InputBackspace,
     InputDeleteForward,
@@ -51,7 +55,7 @@ impl InputMessage {
             InputMessage::SubmitTag(tag) => app.handle_submit_tag(tag),
             InputMessage::SubmitBaseBranch(value) => app.handle_submit_base_branch(value),
             InputMessage::SubmitWrapUpMode(mode) => app.handle_submit_wrap_up_mode(mode),
-            InputMessage::SubmitPhoenix(on) => app.handle_submit_phoenix(on),
+            InputMessage::ArmPhoenix => app.handle_arm_phoenix(),
             InputMessage::InputChar(c) => app.handle_input_char(c),
             InputMessage::InputBackspace => app.handle_input_backspace(),
             InputMessage::InputDeleteForward => app.handle_input_delete_forward(),

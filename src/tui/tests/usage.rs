@@ -523,6 +523,19 @@ fn tag_picker_records_selection_default_and_cancel() {
     assert_silent(&mut app, KeyCode::Char('z'));
 }
 
+/// Arming phoenix records its own effect, not a tag selection: `action` names
+/// the effect a key had (`KeypressRecordsFeatureUsage` in
+/// docs/specs/observability.allium), and a pruning pass asking "is phoenix
+/// used?" has to have a count of its own to read. The second press changes
+/// nothing, so it records nothing.
+#[test]
+fn arming_phoenix_records_its_own_action_and_the_second_press_is_silent() {
+    let mut app = app_in_mode(InputMode::InputTag);
+    app.input.task_draft = Some(TaskDraft::default());
+    assert_records(&mut app, KeyCode::Char('p'), "phoenix_arm", "p");
+    assert_silent(&mut app, KeyCode::Char('p'));
+}
+
 #[test]
 fn wrap_up_mode_picker_records_selection_default_and_cancel() {
     let mut app = app_in_mode(InputMode::InputWrapUpMode);

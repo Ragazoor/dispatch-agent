@@ -191,7 +191,7 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::InputRepoPath => hint("Creating task: enter repo path", YELLOW),
         InputMode::InputTag => hint_text(
             app,
-            "Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none",
+            crate::tui::ui::tag_prompt(app.input.phoenix_armed()),
             YELLOW,
         ),
         InputMode::ConfirmDelete => hint_text(app, "Delete? [y/n]", RED),
@@ -218,7 +218,6 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::InputWrapUpMode => {
             hint_text(app, "Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip", YELLOW)
         }
-        InputMode::InputPhoenix => hint_text(app, crate::tui::ui::PHOENIX_PROMPT, YELLOW),
         InputMode::MainSessionDir => {
             let line = crate::tui::ui::caret_field_line(
                 area.width,

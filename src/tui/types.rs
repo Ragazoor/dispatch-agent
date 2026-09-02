@@ -240,6 +240,9 @@ pub enum InputMode {
     InputTitle,
     InputDescription,
     InputRepoPath,
+    /// Tag picker. Also where phoenix is armed: `p` sets the flag and re-opens
+    /// this same step with `p` dropped from the accepted set, so the real tag
+    /// is still picked (CreateTask: PhoenixArming, in `docs/specs/tasks.allium`).
     InputTag,
     ConfirmDelete,
     QuickDispatch,
@@ -288,10 +291,10 @@ pub enum InputMode {
         epic_id: Option<EpicId>,
     },
     InputBaseBranch,
+    /// The creation form's last step. phoenix has no step of its own — it is
+    /// armed at [`InputMode::InputTag`] (CreateTask: PhoenixArming, in
+    /// `docs/specs/tasks.allium`).
     InputWrapUpMode,
-    /// The creation form's last step: a single-key picker arming the phoenix
-    /// recurrence (CreateTask in `docs/specs/tasks.allium`).
-    InputPhoenix,
     MainSessionDir,
     /// In-view title input for adding or editing a personal TODO item.
     TodoTitle,
@@ -460,6 +463,18 @@ pub struct InputState {
     pub repo_cursor: usize,
     /// Tracks epic_id during quick-dispatch repo selection in epic view.
     pub pending_epic_id: Option<EpicId>,
+    /// True while the draft came from `CopyTask` rather than the new-task form.
+    ///
+    /// Both flows run InputTag, but they leave it for different steps: a new
+    /// task goes on to InputDescription, a copy straight to InputRepoPath
+    /// (its description is copied outright). See CopyTask in
+    /// `docs/specs/tasks.allium`.
+    ///
+    /// Set by `handle_copy_task` and consumed — `mem::take` — by the one
+    /// handler that reads it, so it cannot outlive the draft it describes. A
+    /// stale `true` would silently skip the description editor on the next new
+    /// task, which is a failure with no error to notice.
+    pub copy_flow: bool,
 }
 
 impl Default for InputState {
@@ -472,6 +487,7 @@ impl Default for InputState {
             epic_draft: None,
             repo_cursor: 0,
             pending_epic_id: None,
+            copy_flow: false,
         }
     }
 }
@@ -488,6 +504,19 @@ impl InputState {
     pub fn clear_buffer(&mut self) {
         self.buffer.clear();
         self.caret = 0;
+    }
+
+    /// Whether the in-flight draft has armed the phoenix flag.
+    ///
+    /// One accessor because four surfaces must agree on this bit — the tag
+    /// picker's accepted key set, its two prompt surfaces, and the panel rows
+    /// reserved for the step. A panel offering `[p]hoenix` under a status bar
+    /// that has dropped it is exactly the drift `ui::tag_prompt` exists to
+    /// prevent, and it would come straight back if each surface derived the
+    /// selector itself. The flag lives on the draft (it has to reach
+    /// creation); this only single-sources the projection.
+    pub fn phoenix_armed(&self) -> bool {
+        self.task_draft.as_ref().is_some_and(|d| d.phoenix)
     }
 }
 

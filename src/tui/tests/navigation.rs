@@ -1919,6 +1919,9 @@ fn repo_cursor_resets_on_copy_task() {
     app.input.repo_cursor = 2; // cursor was left at position 2
                                // Copy the first task (select it and press 'c')
     app.handle_key(make_key(KeyCode::Char('c')));
+    // The copy opens on the tag step (CopyTask in docs/specs/tasks.allium);
+    // Enter keeps the copied tag and hands over to the repo-path step.
+    app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::InputRepoPath);
     assert_eq!(
         app.input.repo_cursor, 0,

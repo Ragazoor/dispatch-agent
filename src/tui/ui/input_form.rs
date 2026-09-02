@@ -46,6 +46,13 @@ impl RepoListCtx {
 /// title, `"none"` for a missing tag) so they cannot diverge per step.
 struct DraftSummary {
     title: String,
+    /// The settled tag, suffixed `" (phoenix)"` when the draft armed the flag.
+    ///
+    /// phoenix is answered at the tag step (CreateTask: PhoenixArming, in
+    /// docs/specs/tasks.allium), so every step after it has the flag to show.
+    /// It rides this one line rather than getting a line of its own so no
+    /// step's height moves — `input_panel_height` (kanban/mod.rs) fixes those
+    /// from literals.
     tag: String,
     /// The description's first line, suffixed `" ..."` when more lines follow.
     description_oneline: String,
@@ -55,10 +62,15 @@ impl DraftSummary {
     fn from_input(input: &InputState) -> Self {
         let draft = input.task_draft.as_ref();
         let title = draft.map(|d| d.title.clone()).unwrap_or_default();
-        let tag = draft
+        let tag_name = draft
             .and_then(|d| d.tag.as_ref())
             .map(|t| t.to_string())
             .unwrap_or_else(|| "none".to_string());
+        let tag = if input.phoenix_armed() {
+            format!("{tag_name} (phoenix)")
+        } else {
+            tag_name
+        };
         let description = draft.map(|d| d.description.as_str()).unwrap_or("");
         let desc_first_line = description.lines().next().unwrap_or("").to_string();
         let description_oneline = if description.contains('\n') {
@@ -161,20 +173,93 @@ pub(in crate::tui) fn input_title_lines(
     ]
 }
 
+/// The tag keys both prompt variants below are built from. Every key sits
+/// inside the label it selects (CreateTask: EveryKeyInItsName, in
+/// docs/specs/tasks.allium), which is why PrReview reads `pr-re[v]iew` — `p`
+/// belongs to `[p]hoenix`.
+///
+/// A macro rather than a `const` because `concat!` composes literals, not
+/// const names, and composing is the point: the two variants differ only by the
+/// `[p]hoenix` segment, so a tag renamed in one literal and not the other would
+/// be the same drift `tag_prompt` exists to prevent, one level down. Adding a
+/// tag now means editing this list and the handler's match, and both prompts
+/// follow.
+macro_rules! tag_keys {
+    () => {
+        "Tag: [b]ug  [f]eature  [c]hore  pr-re[v]iew  [r]esearch  fi[x]"
+    };
+}
+
+/// The tag picker's prompt, first pass.
+const TAG_PROMPT: &str = concat!(tag_keys!(), "  [p]hoenix  [Enter] none");
+
+/// The same prompt on the second pass, after `p` armed the flag: `[p]hoenix` is
+/// gone, because so is `p` from the accepted set (CreateTask: PhoenixArming).
+/// The armed flag shows as a settled `Phoenix: yes` line above the picker
+/// instead of being restated here.
+const TAG_PROMPT_PHOENIX_ARMED: &str = concat!(tag_keys!(), "  [Enter] none");
+
+/// The tag step's prompt, shared by all three surfaces that show it: the form
+/// panel's active line (below), the status-bar hint (`kanban/status_bar.rs`)
+/// and the transient status set on entering or re-entering the step
+/// (`update/forms.rs`). One function because the three must agree, and the
+/// accepted set now has two variants — a panel still offering `[p]hoenix`
+/// under a status bar that has dropped it is a drift no test would catch if
+/// each surface carried its own literal.
+pub(in crate::tui) fn tag_prompt(phoenix_armed: bool) -> &'static str {
+    if phoenix_armed {
+        TAG_PROMPT_PHOENIX_ARMED
+    } else {
+        TAG_PROMPT
+    }
+}
+
+/// The `Line` count [`input_tag_lines`] returns with phoenix armed: 2 settled
+/// (title, phoenix) + active + blank + hint. Unarmed it returns one fewer.
+///
+/// `input_panel_height` (kanban/mod.rs) reserves rows without building the real
+/// `Vec` on its per-frame path, so this constant is what ties the two modules
+/// together — `input_tag_lines_returns_a_fixed_line_count_per_variant` below is
+/// what catches it drifting from what the render actually produces.
+pub(in crate::tui) const PHOENIX_ARMED_TAG_STEP_LINES: u16 = 5;
+
+/// The tag picker, and the step where phoenix is armed.
+///
+/// Once armed, a settled `Phoenix: yes` line sits above the active picker line
+/// and the prompt loses its `[p]hoenix` key — see
+/// [`PHOENIX_ARMED_TAG_STEP_LINES`]. The step's reserved rows exceed its line
+/// count either way, and that slack is not spare: the panel wraps
+/// (`Wrap { trim: false }`), so a prompt too long for the terminal costs more
+/// than one row, and the slack is what keeps the trailing `[Esc] cancel` hint
+/// inside the border. Both variants survive down to roughly 40 columns, well
+/// past the width a four-column board is legible at.
 pub(in crate::tui) fn input_tag_lines(app: &App, styles: &FormStyles) -> Vec<Line<'static>> {
-    let summary = DraftSummary::from_input(&app.input);
-    vec![
-        Line::from(Span::styled(
-            format!("  Title: {}", summary.title),
-            styles.completed,
-        )),
-        Line::from(Span::styled(
-            "  Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none",
-            styles.active,
-        )),
-        Line::from(""),
-        Line::from(Span::styled("  [Enter] skip  [Esc] cancel", styles.hint)),
-    ]
+    // Deliberately not a `DraftSummary`: this step renders the tag as a
+    // *prompt*, never as a settled value, so the summary's tag and description
+    // strings would be built and dropped every frame — and its phoenix suffix
+    // would be formatted onto that dead path on exactly the second pass this
+    // step now has.
+    let draft = app.input.task_draft.as_ref();
+    let title = draft.map(|d| d.title.as_str()).unwrap_or("");
+    let phoenix_armed = app.input.phoenix_armed();
+    let mut lines = Vec::with_capacity(PHOENIX_ARMED_TAG_STEP_LINES as usize);
+    lines.push(Line::from(Span::styled(
+        format!("  Title: {title}"),
+        styles.completed,
+    )));
+    if phoenix_armed {
+        lines.push(Line::from(Span::styled("  Phoenix: yes", styles.completed)));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("  {}", tag_prompt(phoenix_armed)),
+        styles.active,
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [Enter] skip  [Esc] cancel",
+        styles.hint,
+    )));
+    lines
 }
 
 pub(in crate::tui) fn input_description_lines(
@@ -295,11 +380,11 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
 
 /// The four steps answered before the wrap-up picker, restated above it.
 ///
-/// Split out because it is shared by two tail steps: the wrap-up picker
-/// itself, and `input_phoenix_lines` (the step after it, which appends its own
-/// settled wrap_up_mode line on top of this). The sibling step renderers above
-/// build their settled lines inline instead — none of them has a step after it
-/// that needs to restate their answers.
+/// Still split out rather than inlined into its one caller: it is the shape a
+/// step added after wrap-up would build on, the same way the (now removed)
+/// standalone phoenix step did. The sibling step renderers above build their
+/// settled lines inline instead — none of them has a step after it that needs
+/// to restate their answers.
 fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
     let summary = DraftSummary::from_input(&app.input);
     let draft = app.input.task_draft.as_ref();
@@ -325,9 +410,9 @@ fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
 ///
 /// A tail step is settled summaries, one active line, then this footer.
 /// `active` is the part that differs per step — a styled span for a
-/// single-key picker, a [`caret_field`] for a free-text one. The wrap-up and
-/// phoenix pickers use it today; it is the shape a step added after them
-/// would take.
+/// single-key picker, a [`caret_field`] for a free-text one. The wrap-up
+/// picker, the form's last step, uses it today; it is the shape a step added
+/// after it would take.
 fn form_step_page<'a>(mut settled: Vec<Line<'a>>, active: Line<'a>, hint: Style) -> Vec<Line<'a>> {
     settled.push(active);
     settled.push(Line::from(""));
@@ -335,6 +420,10 @@ fn form_step_page<'a>(mut settled: Vec<Line<'a>>, active: Line<'a>, hint: Style)
     settled
 }
 
+/// The form's last step (see docs/specs/tasks.allium's CreateTask guidance):
+/// restates the four answered steps — with phoenix riding the settled tag line
+/// when it was armed at InputTag — then the wrap-up picker. Answering it
+/// creates the task.
 pub(in crate::tui) fn input_wrap_up_mode_lines(
     app: &App,
     styles: &FormStyles,
@@ -345,52 +434,6 @@ pub(in crate::tui) fn input_wrap_up_mode_lines(
             "  Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip",
             styles.active,
         )),
-        styles.hint,
-    )
-}
-
-/// The number of lines [`input_phoenix_lines`] always returns: 5 settled
-/// (title, tag, repo, base branch, wrap_up_mode) + active + blank + hint.
-/// Draft content changes what those lines say, never how many there are, so
-/// `input_panel_height` (kanban/mod.rs) uses this literal directly instead of
-/// building the real `Vec` on every frame just to read its length.
-/// `input_phoenix_lines_always_returns_a_fixed_line_count` below is what
-/// keeps this pinned to the real count.
-pub(in crate::tui) const PHOENIX_STEP_LINES: u16 = 8;
-
-/// The phoenix step's prompt, shared by all three surfaces that show it: the
-/// form panel's active line (below), the status-bar hint
-/// (`kanban/status_bar.rs`) and the transient status set on entering the step
-/// (`update/forms.rs`). One constant because the three must agree — a panel
-/// advertising `[p]hoenix` under a status bar still advertising `[y/N]` is a
-/// drift no test would catch if each surface carried its own literal.
-///
-/// Kept to 52 columns. `input_panel_height` (kanban/mod.rs) fixes the panel's
-/// height from `PHOENIX_STEP_LINES`, which counts `Line` values rather than
-/// rendered rows, so an active line that soft-wraps pushes the trailing Esc
-/// hint out of the panel on a narrow terminal.
-pub(in crate::tui) const PHOENIX_PROMPT: &str =
-    "Phoenix — recreate when done? [p]hoenix [Enter] no";
-
-/// The form's last step (see docs/specs/tasks.allium's CreateTask guidance):
-/// restates the five prior steps, including wrap_up_mode which is settled by
-/// the time this step is active, then the phoenix picker.
-pub(in crate::tui) fn input_phoenix_lines(app: &App, styles: &FormStyles) -> Vec<Line<'static>> {
-    let mut settled = answered_step_lines(app, styles.completed);
-    let wrap_up_mode = app
-        .input
-        .task_draft
-        .as_ref()
-        .and_then(|d| d.wrap_up_mode)
-        .map(|m| m.to_string())
-        .unwrap_or_else(|| "skip".to_string());
-    settled.push(Line::from(Span::styled(
-        format!("  Wrap-up: {wrap_up_mode}"),
-        styles.completed,
-    )));
-    form_step_page(
-        settled,
-        Line::from(Span::styled(format!("  {PHOENIX_PROMPT}"), styles.active)),
         styles.hint,
     )
 }
@@ -629,7 +672,7 @@ mod tests {
         assert_eq!(summary.title, "my task");
     }
 
-    // ---- input_phoenix_lines ----------------------------------------------
+    // ---- input_tag_lines and the phoenix marker ---------------------------
 
     fn form_styles() -> FormStyles {
         FormStyles {
@@ -643,80 +686,164 @@ mod tests {
         lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
     }
 
+    /// EveryKeyInItsName (CreateTask in docs/specs/tasks.allium): every key is
+    /// a letter of the label it selects. `p` belongs to "[p]hoenix", so
+    /// PrReview is advertised as "pr-re[v]iew" and Fix as "fi[x]".
     #[test]
-    fn input_phoenix_lines_restates_every_prior_step() {
-        use crate::models::WrapUpMode;
+    fn input_tag_lines_puts_every_key_inside_its_own_label() {
+        let app = crate::tui::App::new(vec![]);
+        let text = lines_text(&input_tag_lines(&app, &form_styles()));
 
+        for label in [
+            "[b]ug",
+            "[f]eature",
+            "[c]hore",
+            "pr-re[v]iew",
+            "[r]esearch",
+            "fi[x]",
+            "[p]hoenix",
+            "[Enter] none",
+        ] {
+            assert!(text.contains(label), "missing {label} in:\n{text}");
+        }
+        assert!(
+            !text.contains("[p]r-review"),
+            "p belongs to phoenix now:\n{text}"
+        );
+        assert!(
+            !text.contains("[x]fix"),
+            "the key sits inside fi[x]:\n{text}"
+        );
+    }
+
+    /// PhoenixArming's second pass: the same step re-opened, with `p` gone from
+    /// the prompt and the armed flag shown as a settled line above it.
+    #[test]
+    fn input_tag_lines_drops_the_p_key_and_shows_phoenix_once_armed() {
         let mut app = crate::tui::App::new(vec![]);
         app.input.task_draft = Some(crate::tui::TaskDraft {
-            title: "My task".to_string(),
-            tag: Some(crate::models::TaskTag::Bug),
-            repo_path: "/some/repo".to_string(),
-            base_branch: "main".to_string(),
-            wrap_up_mode: Some(WrapUpMode::Rebase),
+            title: "Weekly dep audit".to_string(),
+            phoenix: true,
             ..Default::default()
         });
 
-        let text = lines_text(&input_phoenix_lines(&app, &form_styles()));
+        let text = lines_text(&input_tag_lines(&app, &form_styles()));
 
-        assert!(text.contains("Title: My task"), "got:\n{text}");
-        assert!(text.contains("Tag: bug"), "got:\n{text}");
-        assert!(text.contains("Repo: /some/repo"), "got:\n{text}");
-        assert!(text.contains("Base branch: main"), "got:\n{text}");
-        assert!(text.contains("Wrap-up: rebase"), "got:\n{text}");
-        assert!(text.contains("Phoenix"), "got:\n{text}");
+        assert!(text.contains("Phoenix: yes"), "got:\n{text}");
+        assert!(
+            !text.contains("[p]hoenix"),
+            "the second pass must not re-offer p:\n{text}"
+        );
+        assert!(text.contains("[b]ug"), "got:\n{text}");
+        assert!(text.contains("[Enter] none"), "got:\n{text}");
         assert!(text.contains("[Esc] cancel"), "got:\n{text}");
     }
 
+    /// `input_panel_height` (kanban/mod.rs) reserves rows from
+    /// `PHOENIX_ARMED_TAG_STEP_LINES` rather than building this `Vec` on its
+    /// per-frame path, so nothing but this test stops the two drifting apart.
+    /// A step that grew a settled line without the constant following would
+    /// push `[Esc] cancel` outside the panel border.
     #[test]
-    fn input_phoenix_lines_shows_skip_when_wrap_up_mode_unset() {
-        let mut app = crate::tui::App::new(vec![]);
-        app.input.task_draft = Some(crate::tui::TaskDraft {
-            wrap_up_mode: None,
-            ..Default::default()
-        });
+    fn input_tag_lines_returns_a_fixed_line_count_per_variant() {
+        let empty = crate::tui::App::new(vec![]);
+        assert_eq!(
+            input_tag_lines(&empty, &form_styles()).len(),
+            (PHOENIX_ARMED_TAG_STEP_LINES - 1) as usize,
+            "unarmed: title + active + blank + hint"
+        );
 
-        let text = lines_text(&input_phoenix_lines(&app, &form_styles()));
+        // Draft content changes what a line says, never how many there are.
+        for phoenix in [false, true] {
+            let mut app = crate::tui::App::new(vec![]);
+            app.input.task_draft = Some(crate::tui::TaskDraft {
+                title: "My task".to_string(),
+                tag: Some(crate::models::TaskTag::Bug),
+                repo_path: "/some/repo".to_string(),
+                phoenix,
+                ..Default::default()
+            });
+            let expected = if phoenix {
+                PHOENIX_ARMED_TAG_STEP_LINES
+            } else {
+                PHOENIX_ARMED_TAG_STEP_LINES - 1
+            };
+            assert_eq!(
+                input_tag_lines(&app, &form_styles()).len(),
+                expected as usize,
+                "phoenix armed: {phoenix}"
+            );
+        }
+    }
 
-        assert!(text.contains("Wrap-up: skip"), "got:\n{text}");
+    /// Both prompts are built from one `tag_keys!` list, so they can only
+    /// differ by the phoenix segment. This is what says so out loud.
+    #[test]
+    fn the_two_tag_prompts_differ_only_by_the_phoenix_key() {
+        assert_eq!(
+            tag_prompt(false).replace("  [p]hoenix", ""),
+            tag_prompt(true),
+            "the armed prompt is the unarmed one minus [p]hoenix"
+        );
+        assert_ne!(tag_prompt(false), tag_prompt(true));
     }
 
     #[test]
-    fn input_phoenix_lines_always_returns_a_fixed_line_count() {
-        // PHOENIX_STEP_LINES (kanban/mod.rs) is a literal, not derived from
-        // this function, precisely because the count below never moves —
-        // draft content changes what a line says, never how many lines
-        // input_phoenix_lines produces. This test is what would catch a
-        // future step edit going out of sync with that literal.
-        let empty_draft = crate::tui::App::new(vec![]);
-        let mut full_draft = crate::tui::App::new(vec![]);
-        full_draft.input.task_draft = Some(crate::tui::TaskDraft {
+    fn input_tag_lines_omits_the_phoenix_line_when_not_armed() {
+        let app = crate::tui::App::new(vec![]);
+        let text = lines_text(&input_tag_lines(&app, &form_styles()));
+
+        assert!(!text.contains("Phoenix: yes"), "got:\n{text}");
+    }
+
+    /// Once armed, the flag rides the settled tag line through every later
+    /// step, so no step grows an extra line to carry it.
+    #[test]
+    fn draft_summary_marks_an_armed_phoenix_on_the_tag_line() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            tag: Some(crate::models::TaskTag::Bug),
+            phoenix: true,
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.tag, "bug (phoenix)");
+    }
+
+    #[test]
+    fn draft_summary_marks_an_armed_phoenix_with_no_tag() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            tag: None,
+            phoenix: true,
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.tag, "none (phoenix)");
+    }
+
+    /// The wrap-up picker is the form's last step now. It restates the four
+    /// answered steps above it, and shows the armed flag through the tag line.
+    #[test]
+    fn input_wrap_up_mode_lines_carry_the_armed_phoenix() {
+        let mut app = crate::tui::App::new(vec![]);
+        app.input.task_draft = Some(crate::tui::TaskDraft {
             title: "My task".to_string(),
             tag: Some(crate::models::TaskTag::Bug),
             repo_path: "/some/repo".to_string(),
             base_branch: "main".to_string(),
-            wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
+            phoenix: true,
             ..Default::default()
         });
 
-        for app in [&empty_draft, &full_draft] {
-            let lines = input_phoenix_lines(app, &form_styles());
-            assert_eq!(lines.len(), PHOENIX_STEP_LINES as usize);
-        }
-    }
+        let text = lines_text(&input_wrap_up_mode_lines(&app, &form_styles()));
 
-    /// The active line names the option instead of asserting a yes/no, the
-    /// same shape the InputTag and InputWrapUpMode steps use (see CreateTask
-    /// in docs/specs/tasks.allium). `y` is no longer an answer, so it must not
-    /// be advertised as one.
-    #[test]
-    fn input_phoenix_lines_offers_p_and_enter_not_y_slash_n() {
-        let app = crate::tui::App::new(vec![]);
-        let text = lines_text(&input_phoenix_lines(&app, &form_styles()));
-
-        assert!(text.contains("[p]hoenix"), "{text}");
-        assert!(text.contains("[Enter] no"), "{text}");
-        assert!(!text.contains("[y/N]"), "{text}");
+        assert!(text.contains("Title: My task"), "got:\n{text}");
+        assert!(text.contains("Tag: bug (phoenix)"), "got:\n{text}");
+        assert!(text.contains("Repo: /some/repo"), "got:\n{text}");
+        assert!(text.contains("Base branch: main"), "got:\n{text}");
+        assert!(text.contains("Wrap-up:"), "got:\n{text}");
+        assert!(text.contains("[Esc] cancel"), "got:\n{text}");
     }
 
     // ---- append_repo_path_list -------------------------------------------

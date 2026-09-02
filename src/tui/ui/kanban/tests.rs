@@ -112,32 +112,66 @@ fn input_repo_path_shows_none_when_no_tag() {
 }
 
 // ---------------------------------------------------------------------------
-// InputPhoenix — creation-form panel (issue 4466: the step must render in
-// this panel like every other creation-form step, not only in the status bar)
+// Phoenix arming at the tag step (issue 4538). phoenix has no step of its own:
+// `p` at the tag picker arms it and re-opens the same step. The armed flag must
+// show inside the "New Task" panel, not only in the status bar (issue 4466).
 // ---------------------------------------------------------------------------
 
+/// The armed step renders one line more than the unarmed one — the settled
+/// `Phoenix: yes` — so its reservation must cover the lines it draws plus the
+/// two border rows. Anything less pushes the trailing `[Esc] cancel` hint
+/// outside the panel.
 #[test]
-fn input_panel_height_reserves_room_for_phoenix_step() {
+fn input_panel_height_covers_the_armed_tag_steps_lines_and_borders() {
     let mut app = make_test_app();
-    app.input.mode = InputMode::InputPhoenix;
+    app.input.mode = InputMode::InputTag;
+    app.input.task_draft = Some(TaskDraft {
+        title: "My task".into(),
+        phoenix: true,
+        ..Default::default()
+    });
+
+    let reserved = input_panel_height(&app, 24);
+    let needed = super::PHOENIX_ARMED_TAG_STEP_LINES + 2;
     assert!(
-        input_panel_height(&app, 24) > 0,
-        "InputPhoenix must reserve panel rows like the other creation-form steps"
+        reserved >= needed,
+        "reserved {reserved} rows for a step needing at least {needed}"
     );
 }
 
+/// The clamp the armed arm's formula needs and the bare `8` arms do not: on a
+/// terminal short enough that `max_height` floors at 8, the panel must not ask
+/// the layout for more than it has, or the solver takes the row off the board's
+/// stated minimum.
 #[test]
-fn render_input_form_draws_phoenix_step_in_the_panel() {
+fn input_panel_height_never_exceeds_the_layouts_budget_when_phoenix_is_armed() {
+    let mut app = make_test_app();
+    app.input.mode = InputMode::InputTag;
+    app.input.task_draft = Some(TaskDraft {
+        title: "My task".into(),
+        phoenix: true,
+        ..Default::default()
+    });
+
+    for area_height in [10u16, 12, 17, 24, 40] {
+        let max_height = area_height.saturating_sub(9).max(8);
+        let reserved = input_panel_height(&app, area_height);
+        assert!(
+            reserved <= max_height,
+            "area_height {area_height}: reserved {reserved} > budget {max_height}"
+        );
+    }
+}
+
+#[test]
+fn render_input_form_draws_the_armed_phoenix_in_the_panel() {
     use ratatui::{backend::TestBackend, Terminal};
 
     let mut app = make_test_app();
-    app.input.mode = InputMode::InputPhoenix;
+    app.input.mode = InputMode::InputTag;
     app.input.task_draft = Some(TaskDraft {
         title: "My task".into(),
-        tag: Some(TaskTag::Bug),
-        repo_path: "/some/repo".into(),
-        base_branch: "main".into(),
-        wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
+        phoenix: true,
         ..Default::default()
     });
 
@@ -151,7 +185,7 @@ fn render_input_form_draws_phoenix_step_in_the_panel() {
         })
         .unwrap();
 
-    assert!(drew_form, "InputPhoenix must render inside the form panel");
+    assert!(drew_form, "InputTag must render inside the form panel");
 
     let buf = terminal.backend().buffer().clone();
     let text: String = (0..buf.area().height)
@@ -160,7 +194,7 @@ fn render_input_form_draws_phoenix_step_in_the_panel() {
         .join("\n");
     assert!(text.contains("New Task"), "got:\n{text}");
     assert!(text.contains("My task"), "got:\n{text}");
-    assert!(text.contains("Phoenix"), "got:\n{text}");
+    assert!(text.contains("Phoenix: yes"), "got:\n{text}");
 }
 
 fn render_list_item_to_buf(item: ListItem<'static>, width: u16, height: u16) -> Buffer {

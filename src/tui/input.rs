@@ -169,7 +169,6 @@ impl App {
                 InputMode::ConfirmDeleteRepoPath => self.handle_key_confirm_delete_repo_path(key),
                 InputMode::ConfirmQuit => self.handle_key_confirm_quit(key),
                 InputMode::InputWrapUpMode => self.handle_key_wrap_up_mode(key),
-                InputMode::InputPhoenix => self.handle_key_phoenix(key),
                 InputMode::ReparentEpic(_) => self.handle_key_reparent_epic(key),
                 InputMode::ConfirmReparentEpic { .. } => self.handle_key_confirm_reparent_epic(key),
                 InputMode::MoveTaskToEpic(_) => self.handle_key_move_task_to_epic(key),
@@ -642,8 +641,36 @@ impl App {
         }
     }
 
+    /// The creation form's tag picker, and the only place phoenix is armed.
+    ///
+    /// Every accepted key is a letter of the label it selects (CreateTask:
+    /// EveryKeyInItsName, in `docs/specs/tasks.allium`), which is why PrReview
+    /// answers to `v` — `p` belongs to "[p]hoenix".
+    ///
+    /// `p` does not pick a tag: it arms the flag and re-opens this same step
+    /// with `p` dropped from the accepted set, so the real tag is still chosen
+    /// (CreateTask: PhoenixArming). It is handled ahead of the shared picker
+    /// because it records its own effect rather than a tag selection — see
+    /// `KeypressRecordsFeatureUsage` in `docs/specs/observability.allium`,
+    /// where `action` names the effect a key had, never the key. Folding it
+    /// into the tag match would bucket arming under `tag_picker_select`, and a
+    /// pruning pass reading the absence of a `phoenix_arm` count as "unused"
+    /// would then be reading nothing at all.
+    ///
+    /// A second `p` is a silent no-op, like any key the picker does not
+    /// accept.
     pub(in crate::tui) fn handle_key_tag(&mut self, key: KeyEvent) -> Vec<Command> {
         use crate::tui::messages::InputMessage;
+        if key.code == KeyCode::Char('p') {
+            if self.input.phoenix_armed() {
+                return vec![];
+            }
+            return self.dispatch_keyed(
+                Message::Input(InputMessage::ArmPhoenix),
+                "phoenix_arm",
+                "p",
+            );
+        }
         self.handle_char_picker(
             key,
             "tag_picker",
@@ -652,7 +679,7 @@ impl App {
                     'b' => TaskTag::Bug,
                     'f' => TaskTag::Feature,
                     'c' => TaskTag::Chore,
-                    'p' => TaskTag::PrReview,
+                    'v' => TaskTag::PrReview,
                     'r' => TaskTag::Research,
                     'x' => TaskTag::Fix,
                     _ => return None,
@@ -680,23 +707,6 @@ impl App {
                 Some(Message::Input(InputMessage::SubmitWrapUpMode(Some(mode))))
             },
             Message::Input(InputMessage::SubmitWrapUpMode(None)),
-            Message::Input(InputMessage::CancelInput),
-        )
-    }
-
-    /// The creation form's last step (CreateTask in `docs/specs/tasks.allium`):
-    /// a single-key picker arming the phoenix recurrence.
-    ///
-    /// Built on `handle_char_picker` like the tag and wrap-up steps before it,
-    /// so declining still costs one keypress and no decision (Enter) while a
-    /// stray key can no longer answer the question on the operator's behalf.
-    pub(in crate::tui) fn handle_key_phoenix(&mut self, key: KeyEvent) -> Vec<Command> {
-        use crate::tui::messages::InputMessage;
-        self.handle_char_picker(
-            key,
-            "phoenix_picker",
-            |c| (c == 'p').then_some(Message::Input(InputMessage::SubmitPhoenix(true))),
-            Message::Input(InputMessage::SubmitPhoenix(false)),
             Message::Input(InputMessage::CancelInput),
         )
     }

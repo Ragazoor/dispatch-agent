@@ -16,17 +16,23 @@ impl App {
         let repo_path = task.repo_path.clone();
         let tag = task.tag;
         let wrap_up_mode = task.wrap_up_mode;
+        // The copy runs the form from InputTag on (CopyTask in
+        // docs/specs/tasks.allium): that step is where phoenix is armed, and a
+        // copy that skipped it would be the one flow with no way to arm the
+        // flag. The source's repo_path rides on the draft rather than in the
+        // buffer, because InputRepoPath is now one step further along.
         self.input.task_draft = Some(TaskDraft {
             title,
             description,
+            repo_path,
             tag,
             wrap_up_mode,
             ..Default::default()
         });
-        self.input.set_buffer(repo_path);
-        self.input.repo_cursor = 0;
-        self.input.mode = InputMode::InputRepoPath;
-        self.set_status("Enter repo path: ".to_string());
+        self.input.clear_buffer();
+        self.input.copy_flow = true;
+        self.input.mode = InputMode::InputTag;
+        self.set_status(crate::tui::ui::tag_prompt(false).to_string());
         vec![]
     }
 
@@ -34,6 +40,7 @@ impl App {
         self.input.mode = InputMode::InputTitle;
         self.input.clear_buffer();
         self.input.task_draft = None;
+        self.input.copy_flow = false;
         self.set_status("Enter title: ".to_string());
         vec![]
     }
@@ -42,6 +49,7 @@ impl App {
         self.input.mode = InputMode::Normal;
         self.input.clear_buffer();
         self.input.task_draft = None;
+        self.input.copy_flow = false;
         self.input.pending_epic_id = None;
         self.interaction.pending = PendingAction::None;
         self.clear_status();
@@ -65,22 +73,37 @@ impl App {
                 phoenix: false,
             });
             self.input.mode = InputMode::InputTag;
-            self.set_status(
-                "Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none"
-                    .to_string(),
-            );
+            self.set_status(crate::tui::ui::tag_prompt(false).to_string());
         }
         vec![]
     }
 
-    pub(in crate::tui) fn handle_submit_description(&mut self, value: String) -> Vec<Command> {
-        self.input.clear_buffer();
-        if let Some(ref mut draft) = self.input.task_draft {
-            draft.description = value;
-        }
+    /// Enter the repo-path step, prefilling the picker from the draft's own
+    /// `repo_path`.
+    ///
+    /// Shared by the two steps that hand over to it — InputDescription (new
+    /// task) and InputTag (copy) — so the step's entry invariants and its
+    /// prompt live in one place. The new-task draft carries an empty
+    /// `repo_path`, so the prefill is a no-op there; the copy's carries the
+    /// source's path.
+    fn enter_repo_path_step(&mut self) {
+        let prefill = self
+            .input
+            .task_draft
+            .as_ref()
+            .map(|d| d.repo_path.clone())
+            .unwrap_or_default();
+        self.input.set_buffer(prefill);
         self.input.repo_cursor = 0;
         self.input.mode = InputMode::InputRepoPath;
         self.set_status("Enter repo path: ".to_string());
+    }
+
+    pub(in crate::tui) fn handle_submit_description(&mut self, value: String) -> Vec<Command> {
+        if let Some(ref mut draft) = self.input.task_draft {
+            draft.description = value;
+        }
+        self.enter_repo_path_step();
         vec![]
     }
 
@@ -151,26 +174,47 @@ impl App {
         if let (Some(ref mut draft), Some(m)) = (self.input.task_draft.as_mut(), mode) {
             draft.wrap_up_mode = Some(m);
         }
-        self.input.mode = InputMode::InputPhoenix;
-        self.set_status(crate::tui::ui::PHOENIX_PROMPT.to_string());
-        vec![]
-    }
-
-    /// The form's last step. Unlike wrap_up_mode's, this does NOT seed from a
-    /// copied source task: `CopyTask` deliberately does not carry the flag (see
-    /// docs/specs/tasks.allium), so the draft answers this question fresh even
-    /// when the source was a phoenix.
-    pub(in crate::tui) fn handle_submit_phoenix(&mut self, on: bool) -> Vec<Command> {
-        if let Some(ref mut draft) = self.input.task_draft {
-            draft.phoenix = on;
-        }
         self.finish_task_creation()
     }
 
+    /// `p` at the tag picker (CreateTask: PhoenixArming, in
+    /// docs/specs/tasks.allium). Arms the flag and re-opens the SAME step, so
+    /// the operator still picks the task's real tag.
+    ///
+    /// There is no disarming counterpart: declining the recurrence is not
+    /// pressing `p`, so an ordinary task costs no keypress at all for it.
+    /// Nothing seeds the flag either — `CopyTask` deliberately does not carry
+    /// it (see docs/specs/tasks.allium), so every draft reaches this step
+    /// unarmed even when the source was a phoenix.
+    pub(in crate::tui) fn handle_arm_phoenix(&mut self) -> Vec<Command> {
+        if let Some(ref mut draft) = self.input.task_draft {
+            draft.phoenix = true;
+        }
+        // Mode is already InputTag; re-advertise the accepted set without `p`.
+        self.set_status(crate::tui::ui::tag_prompt(true).to_string());
+        vec![]
+    }
+
+    /// Leaves the tag picker for whichever step follows it: InputDescription
+    /// for a new task, InputRepoPath for a copy (whose description is already
+    /// carried). See CopyTask in docs/specs/tasks.allium.
+    ///
+    /// `tag == None` means Enter was pressed without an explicit pick — leave
+    /// the draft's existing value alone rather than clearing it, so CopyTask's
+    /// seeded tag survives the step (CreateTask: EnterKeepsTheDraft). Same
+    /// rule, and same reason, as `handle_submit_wrap_up_mode` above.
     pub(in crate::tui) fn handle_submit_tag(&mut self, tag: Option<TaskTag>) -> Vec<Command> {
         self.input.clear_buffer();
-        if let Some(ref mut draft) = self.input.task_draft {
-            draft.tag = tag;
+        if let (Some(ref mut draft), Some(t)) = (self.input.task_draft.as_mut(), tag) {
+            draft.tag = Some(t);
+        }
+        // Taken, not read: the marker's only reader is here, so consuming it
+        // retires the stale-`true` class outright rather than relying on every
+        // exit path from the form remembering to clear it. Same discipline as
+        // `pending_epic_id.take()` below.
+        if std::mem::take(&mut self.input.copy_flow) {
+            self.enter_repo_path_step();
+            return vec![];
         }
         self.input.mode = InputMode::InputDescription;
         self.set_status("Opening editor for description...".to_string());

@@ -49,23 +49,65 @@ rule CreateTask {
     @guidance
         -- tag is chosen in the TUI creation form's tag-picker step, a
         -- single-keypress picker. The accepted keys are: b -> Bug,
-        -- f -> Feature, c -> Chore, p -> PrReview, r -> Research,
-        -- x -> Fix. Enter means no tag; Esc cancels creation. Any other
-        -- key is silently ignored and the picker stays open.
+        -- f -> Feature, c -> Chore, v -> PrReview, r -> Research,
+        -- x -> Fix, and p -> arm the phoenix flag (see PhoenixArming
+        -- below). Enter means "no explicit pick"; Esc cancels creation. Any
+        -- other key is silently ignored and the picker stays open.
         --
-        -- That accepted set is advertised by THREE separate hint strings, one
-        -- per surface the picker step is visible on, each a literal of its
-        -- own with nothing deriving it from the handler's match:
+        -- EveryKeyInItsName. Each key is a letter of the label it selects, so
+        -- the hint reads b -> "[b]ug", v -> "pr-re[v]iew", x -> "fi[x]". The
+        -- key is never a mnemonic sitting outside the word. This is why
+        -- PrReview is v and not p: p belongs to "[p]hoenix", and moving
+        -- PrReview to "pr-re[v]iew" keeps both keys inside their own labels.
+        --
+        -- EnterKeepsTheDraft. Enter does not clear tag — it leaves whatever
+        -- the draft already holds. For the manual creation form the draft
+        -- holds null, so Enter still means "no tag". For CopyTask (below),
+        -- which seeds the draft from the source task, Enter keeps the copied
+        -- tag rather than silently dropping it. This is the same rule
+        -- SetWrapUpMode's picker step already follows, and for the same
+        -- reason.
+        --
+        -- That accepted set is advertised by THREE separate hint surfaces,
+        -- one per place the picker step is visible:
         --   1. the transient status message set when the step is entered;
         --   2. the input-panel form hint (the active line of the "New Task"
         --      wizard panel);
         --   3. the status-bar hint rendered while InputTag is the mode.
-        -- All three must advertise exactly the handler's accepted set,
-        -- b/f/c/p/r/x plus Enter for none, and no key outside it. Nothing
-        -- structural enforces the agreement — the drift this replaces was
-        -- two of the three offering an "[e]pic" key the handler never
-        -- accepted, and the status bar omitting p/r/x entirely — so a new tag
-        -- means editing all three sites and the handler.
+        -- All three must advertise exactly the handler's accepted set, and no
+        -- key outside it. The drift this guards against was real — two of the
+        -- three once offered an "[e]pic" key the handler never accepted, and
+        -- the status bar omitted p/r/x entirely — and the phoenix key doubles
+        -- the exposure, because the set now has two variants (see
+        -- PhoenixArming). So all three surfaces derive their text from ONE
+        -- prompt value per variant rather than each carrying its own literal.
+        --
+        -- PhoenixArming. Pressing p at the tag picker does not pick a tag: it
+        -- arms phoenix on the draft and re-opens the SAME picker step with p
+        -- removed from the accepted set, so the operator then picks the
+        -- task's actual tag. Phoenix is orthogonal to tag (see WhyNotATag
+        -- below), so it cannot be one of the tag values — but it is answered
+        -- at the same keypress, which is why it lives here rather than in a
+        -- step of its own. The re-opened picker is the same step, not a new
+        -- one: Esc still cancels the whole form (it does not step back and
+        -- disarm phoenix), Enter still means "no explicit pick", and a second
+        -- p is now among the silently-ignored keys. The prompt is the
+        -- first-pass prompt minus "[p]hoenix" — the panel shows the armed
+        -- flag as a settled "Phoenix: yes" line above the active picker line
+        -- rather than restating it in the prompt.
+        --
+        -- Once phoenix is armed, every later step of the form shows it inside
+        -- the settled tag line — "Tag: bug (phoenix)", or "Tag: none
+        -- (phoenix)" when no tag was picked — so the decision stays visible
+        -- through to creation without any step growing an extra line.
+        --
+        -- There is NO separate phoenix step. The form's steps are, in order:
+        -- InputTitle -> InputTag -> InputDescription -> InputRepoPath ->
+        -- InputBaseBranch -> InputWrapUpMode -> created. phoenix is decided at
+        -- InputTag, before the fields that follow it, and the ordinary
+        -- non-phoenix task costs no keypress at all for the flag: not pressing
+        -- p IS declining it.
+        --
         -- base_branch is set from user input during TUI task creation
         -- (InputBaseBranch step). That step renders the BaseBranchPicker
         -- surface (see dispatch.allium): a fuzzy picker over the branches
@@ -79,26 +121,16 @@ rule CreateTask {
         -- If omitted (e.g. quick-dispatch), base_branch
         -- defaults to config.default_branch (usually "main").
         -- wrap_up_mode is set during the TUI creation form (InputWrapUpMode
-        -- step, after InputBaseBranch) or via the MCP create_task tool.
-        -- When null, the wrap-up path is decided at wrap-up time.
+        -- step, after InputBaseBranch, and now the form's last step) or via
+        -- the MCP create_task tool. When null, the wrap-up path is decided at
+        -- wrap-up time. Answering it finishes the form and creates the task.
         --
-        -- phoenix is set during the TUI creation form (InputPhoenix step, the
-        -- last one, after InputWrapUpMode) or via the MCP create_task tool. It
-        -- defaults to false, and the step is a single-key picker built on the
-        -- same rule as the InputTag and InputWrapUpMode steps before it:
-        -- 'p' arms the flag, Enter alone declines it, Esc cancels creation,
-        -- and every other key is a no-op that leaves the step open. So the
-        -- ordinary task still takes one extra keypress and no decision, while
-        -- a stray keypress can no longer answer the question by accident.
-        -- The prompt names the option rather than asserting a yes/no, for the
-        -- same reason its siblings do: '[p]hoenix [Enter] no', not '[y/N]'.
-        -- Like every other creation-form step, InputPhoenix renders inside the
-        -- same bordered "New Task" panel as the rest of the wizard (settled
-        -- fields above, the picker prompt as the active line) — it is not a
-        -- bare status-bar-only prompt shown after that panel has closed.
+        -- phoenix is set at the InputTag step as described above, or via the
+        -- MCP create_task tool. It defaults to false.
         -- Quick-dispatch (CreateQuickTask) does not offer it — a quick task is
         -- a one-off by construction, and the agent can set the flag through
-        -- update_task once it knows what the work is.
+        -- update_task once it knows what the work is. Quick-dispatch offers no
+        -- tag picker either, so there is nowhere for the p key to live.
         -- What the flag then does is PhoenixRespawn, below; setting it at
         -- creation has no effect until the task first reaches done.
         --
@@ -394,6 +426,14 @@ rule ConfirmDone {
 -- (TaskTag::is_review), and phoenix has nothing to say about either. Making it
 -- a tag would also make it exclusive with bug/chore/feature, and a recurring
 -- chore is the ordinary case, not an edge one.
+--
+-- SharesTheTagKeypressAnyway. Orthogonal in the model does not mean answered
+-- somewhere else in the UI. The TUI arms phoenix from the tag picker's p key,
+-- which then re-opens the picker for the real tag (CreateTask:
+-- PhoenixArming). That is one keypress in a step the operator is already in,
+-- and it is the reason phoenix has no step of its own — not a hint that the
+-- flag is a tag after all. The two answers stay separate fields, and the
+-- second pass exists precisely so a phoenix task still gets its own tag.
 --
 -- TheFlagIsTheReceipt. There is no second field recording "this one already
 -- respawned". PhoenixRespawn clears the flag exactly when the successor was
@@ -1122,15 +1162,16 @@ rule CopyTask {
         repo_path: confirmed_repo_path,  -- user confirms or edits before creation
         status: backlog,
         sub_status: core/SubStatus.default_for(backlog),
-        tag: source.tag,
+        tag: confirmed_tag,              -- source.tag seeds it; user re-confirms
+        phoenix: armed_phoenix,          -- false unless armed at InputTag
         wrap_up_mode: source.wrap_up_mode,
         created_at: now,
         updated_at: now
     )
 
     @guidance
-        -- Copies a subset of fields from the source task, including the
-        -- wrap_up_mode preference. Fields that are NOT copied: plan,
+        -- Copies a subset of fields from the source task, including the tag and
+        -- the wrap_up_mode preference. Fields that are NOT copied: plan,
         -- worktree, tmux_window, url, epic, sort_order, base_branch, phoenix.
         -- auto_run_plan is NOT copied — like plan_path, it's tied to a
         -- specific (unshared) plan file, and this field is set by skills
@@ -1141,15 +1182,23 @@ rule CopyTask {
         -- every task either chain produces — is not a thing a copy key should
         -- be able to do by accident. Contrast PhoenixRespawn's successor, which
         -- DOES carry the flag: there the recurrence is the operation.
-        -- The copy flow's tail runs InputPhoenix like the creation form does
-        -- (see below), so opting the copy in is still one keypress — it is just
-        -- a keypress the operator has to make. The step's draft value is false
-        -- whatever the source held, unlike wrap_up_mode's, which the source
-        -- seeds.
+        -- The copy flow runs InputTag like the creation form does (see below),
+        -- so opting the copy in is still one keypress — it is just a keypress
+        -- the operator has to make. The draft's phoenix value entering that
+        -- step is false whatever the source held, unlike its tag and
+        -- wrap_up_mode, which the source seeds.
         -- The new task is a clean backlog item with no agent history.
         --
-        -- The copy flow runs the tail of the manual creation form:
-        -- InputRepoPath -> InputBaseBranch -> InputWrapUpMode -> InputPhoenix. The user is
+        -- The copy flow runs the manual creation form's steps from InputTag on,
+        -- skipping only InputTitle and InputDescription (both copied outright):
+        -- InputTag -> InputRepoPath -> InputBaseBranch -> InputWrapUpMode. It
+        -- runs InputTag rather than accepting the copied tag silently because
+        -- that step is where phoenix is armed (CreateTask: PhoenixArming), and
+        -- a copy that could never become a phoenix would be the only flow with
+        -- no way to arm it. The copied tag is not lost to the extra step:
+        -- InputTag's Enter keeps whatever the draft holds (CreateTask:
+        -- EnterKeepsTheDraft), so copying a bug and pressing Enter still yields
+        -- a bug. The user is
         -- prompted to confirm or edit the repo_path before the task is
         -- created (the source's repo_path is pre-filled as default).
         -- base_branch is NOT copied from the source task and is NOT taken
@@ -1158,10 +1207,11 @@ rule CopyTask {
         -- dispatch.allium), prefilled with the most-recently-used branch
         -- for the confirmed repo_path and falling back to
         -- config.default_branch when that repo has no history yet.
-        -- The source's wrap_up_mode seeds the draft, but the
-        -- InputWrapUpMode prompt that follows records whatever the user
-        -- answers there (Enter = no preference), so the copied value only
-        -- survives if the user re-picks it.
+        -- The source's wrap_up_mode seeds the draft, and the InputWrapUpMode
+        -- prompt that follows keeps it: Enter there means "no explicit pick",
+        -- not "no preference", so only an explicit r/p/d replaces the copied
+        -- value (CreateTask: EnterKeepsTheDraft — the tag step follows the
+        -- same rule, for the same reason).
 }
 
 -- == Editor ==

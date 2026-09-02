@@ -56,13 +56,10 @@ async fn finish_task_creation_emits_save_repo_path_and_save_base_branch() {
     app.update(Message::Input(
         crate::tui::messages::InputMessage::SubmitBaseBranch("develop".to_string()),
     ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
-    // The phoenix step is the form's last one; submitting it commits the
-    // creation (tasks.allium: CreateTask).
+    // Wrap-up is the form's last step; submitting it commits the creation
+    // (tasks.allium: CreateTask).
     let cmds = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitPhoenix(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
 
     assert!(

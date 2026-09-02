@@ -44,12 +44,9 @@ fn repo_path_empty_uses_saved_path() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    // Skipping wrap-up advances to the phoenix step, which is the form's last.
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
+    // Wrap-up is the form's last step: answering it creates the task.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitPhoenix(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds3.iter().any(|c| matches!(
@@ -121,12 +118,9 @@ fn repo_path_nonempty_used_as_is() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    // Skipping wrap-up advances to the phoenix step, which completes creation.
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
+    // Wrap-up is the form's last step: answering it creates the task.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitPhoenix(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds3
@@ -211,7 +205,7 @@ fn enter_with_title_advances_to_tag() {
     assert_eq!(app.input.task_draft.as_ref().unwrap().title, "My Task");
     assert_eq!(
         app.status.message.as_deref(),
-        Some("Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none")
+        Some("Tag: [b]ug  [f]eature  [c]hore  pr-re[v]iew  [r]esearch  fi[x]  [p]hoenix  [Enter] none")
     );
 }
 
@@ -528,7 +522,7 @@ fn submit_title_with_text_advances_to_tag() {
     assert_eq!(app.input.task_draft.as_ref().unwrap().title, "My Task");
     assert_eq!(
         app.status.message.as_deref(),
-        Some("Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none")
+        Some("Tag: [b]ug  [f]eature  [c]hore  pr-re[v]iew  [r]esearch  fi[x]  [p]hoenix  [Enter] none")
     );
 }
 
@@ -1788,27 +1782,81 @@ fn confirm_detach_tmux_n_cancels() {
     assert_eq!(app.input.mode, InputMode::Normal);
 }
 
+/// CopyTask skips InputTitle and InputDescription (both copied outright) and
+/// starts at InputTag — the step where phoenix is armed. Without it a copy
+/// would be the one flow with no way to arm the flag (CopyTask in
+/// docs/specs/tasks.allium).
 #[test]
 fn handle_key_normal_copy_task() {
     let mut app = make_app();
     app.selection_mut().set_column(1);
     app.selection_mut().set_row(1, 0);
     app.handle_key(make_key(KeyCode::Char('c')));
-    // CopyTask skips title/tag and goes straight to repo path with pre-filled buffer
+    assert_eq!(*app.mode(), InputMode::InputTag);
+    let draft = app.input.task_draft.as_ref().unwrap();
+    assert!(draft.title.contains("Task 1"));
+    assert!(
+        !draft.repo_path.is_empty(),
+        "the source repo_path is carried on the draft, ready for InputRepoPath"
+    );
+}
+
+/// The extra step costs the copy nothing: Enter keeps the seeded tag and hands
+/// straight over to the repo-path step with the source path pre-filled.
+#[test]
+fn copy_task_tag_step_enter_keeps_the_tag_and_advances_to_repo_path() {
+    let mut app = make_app();
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0);
+    let selected = app.selected_task().expect("a task is selected").id;
+    let source_repo = app
+        .board
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == selected)
+        .map(|t| {
+            t.tag = Some(crate::models::TaskTag::Chore);
+            t.repo_path.clone()
+        })
+        .expect("the selected task exists");
+
+    app.handle_key(make_key(KeyCode::Char('c')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
+
     assert_eq!(*app.mode(), InputMode::InputRepoPath);
-    assert!(app
-        .input
-        .task_draft
-        .as_ref()
-        .unwrap()
-        .title
-        .contains("Task 1"));
+    assert_eq!(
+        app.input.task_draft.as_ref().unwrap().tag,
+        Some(crate::models::TaskTag::Chore),
+        "Enter keeps the copied tag"
+    );
+    assert_eq!(
+        app.input.buffer, source_repo,
+        "the repo-path step opens pre-filled with the source path"
+    );
+    assert!(
+        cmds.is_empty(),
+        "the copy must not pop the description editor — the description is copied"
+    );
+}
+
+#[test]
+fn a_copy_can_be_armed_as_a_phoenix_at_the_tag_step() {
+    let mut app = make_app();
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0);
+
+    app.handle_key(make_key(KeyCode::Char('c')));
+    app.handle_key(make_key(KeyCode::Char('p')));
+
+    assert_eq!(*app.mode(), InputMode::InputTag, "the picker re-opens");
+    assert!(app.input.task_draft.as_ref().unwrap().phoenix);
 }
 
 /// `CopyTask` carries tag and wrap_up_mode across but deliberately NOT phoenix:
 /// `c` is a single keypress, and silently starting a second recurring chain
 /// from it is not something a copy key should be able to do (see CopyTask in
-/// docs/specs/tasks.allium). The copy answers the InputPhoenix step fresh.
+/// docs/specs/tasks.allium). The copy answers the phoenix question fresh at
+/// the tag step.
 #[test]
 fn copying_a_phoenix_task_does_not_carry_the_flag() {
     let mut app = make_app();
@@ -1996,12 +2044,9 @@ fn handle_key_text_input_repo_enter_selects_cursor_repo() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    // The phoenix step follows wrap-up and is what commits the creation.
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
+    // Wrap-up is the form's last step: answering it creates the task.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitPhoenix(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert!(cmds3.iter().any(|c| matches!(
         c,
@@ -2028,12 +2073,9 @@ fn handle_key_text_input_enter_submits_typed_text() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    // The phoenix step follows wrap-up and is what commits the creation.
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
+    // Wrap-up is the form's last step: answering it creates the task.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitPhoenix(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert!(cmds3.iter().any(|c| matches!(
         c,
@@ -2443,8 +2485,29 @@ fn enter_with_typed_filter_selects_filtered_item() {
     assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, "/var");
 }
 
+/// `v`, not `p`: EveryKeyInItsName (CreateTask in docs/specs/tasks.allium)
+/// puts each key inside the label it selects, and `p` belongs to "[p]hoenix",
+/// so PrReview is advertised and selected as "pr-re[v]iew".
 #[test]
 fn handle_key_tag_selects_pr_review() {
+    let mut app = make_app();
+    app.input.mode = InputMode::InputTag;
+    app.input.task_draft = Some(TaskDraft {
+        title: "Test".to_string(),
+        ..Default::default()
+    });
+
+    app.handle_key(make_key(KeyCode::Char('v')));
+    assert_eq!(
+        app.input.task_draft.as_ref().unwrap().tag,
+        Some(TaskTag::PrReview)
+    );
+}
+
+/// The key PrReview used to own. It must not select PrReview any more, or the
+/// phoenix arming below would be unreachable.
+#[test]
+fn handle_key_tag_p_no_longer_selects_pr_review() {
     let mut app = make_app();
     app.input.mode = InputMode::InputTag;
     app.input.task_draft = Some(TaskDraft {
@@ -2455,7 +2518,8 @@ fn handle_key_tag_selects_pr_review() {
     app.handle_key(make_key(KeyCode::Char('p')));
     assert_eq!(
         app.input.task_draft.as_ref().unwrap().tag,
-        Some(TaskTag::PrReview)
+        None,
+        "p arms phoenix; it selects no tag"
     );
 }
 
@@ -2522,9 +2586,8 @@ fn submit_base_branch_transitions_to_wrap_up_mode() {
 }
 
 /// A draft parked at the wrap-up step — the shared starting point for every
-/// test of the form's tail. Wrap-up is no longer the last step: it advances to
-/// InputPhoenix, and answering that is what creates the task (see
-/// `finish_at_phoenix_step`).
+/// test of the form's tail. Wrap-up is the form's LAST step: answering it is
+/// what creates the task. phoenix is decided earlier, at InputTag.
 fn app_at_wrap_up_step() -> App {
     let mut app = make_app();
     app.input.mode = InputMode::InputWrapUpMode;
@@ -2535,18 +2598,6 @@ fn app_at_wrap_up_step() -> App {
         ..Default::default()
     });
     app
-}
-
-/// Answer the phoenix step with "no" (Enter), the form's last step, and return
-/// the commands that answer produced. The tests below are about the steps
-/// BEFORE it, so they all decline the recurrence.
-fn finish_at_phoenix_step(app: &mut App) -> Vec<Command> {
-    assert_eq!(
-        app.input.mode,
-        InputMode::InputPhoenix,
-        "expected the phoenix step after wrap-up"
-    );
-    app.handle_key(make_key(KeyCode::Enter))
 }
 
 /// The draft the form asked to create, or `None` if it emitted no Insert.
@@ -2568,8 +2619,7 @@ fn type_text(app: &mut App, text: &str) {
 fn wrap_up_mode_r_selects_rebase_and_creates_task() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Char('r')));
-    let cmds = finish_at_phoenix_step(&mut app);
+    let cmds = app.handle_key(make_key(KeyCode::Char('r')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2584,8 +2634,7 @@ fn wrap_up_mode_r_selects_rebase_and_creates_task() {
 fn wrap_up_mode_p_selects_pr_and_creates_task() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Char('p')));
-    let cmds = finish_at_phoenix_step(&mut app);
+    let cmds = app.handle_key(make_key(KeyCode::Char('p')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2600,8 +2649,7 @@ fn wrap_up_mode_p_selects_pr_and_creates_task() {
 fn wrap_up_mode_d_selects_done_and_creates_task() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Char('d')));
-    let cmds = finish_at_phoenix_step(&mut app);
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2616,8 +2664,7 @@ fn wrap_up_mode_d_selects_done_and_creates_task() {
 fn wrap_up_mode_enter_skips_and_creates_task_with_no_mode() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Enter));
-    let cmds = finish_at_phoenix_step(&mut app);
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2639,8 +2686,7 @@ fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
         draft.wrap_up_mode = Some(crate::models::WrapUpMode::Pr);
     }
 
-    app.handle_key(make_key(KeyCode::Enter));
-    let cmds = finish_at_phoenix_step(&mut app);
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     let draft = insert_draft(&cmds).expect("expected Insert command");
     assert_eq!(
@@ -2650,7 +2696,7 @@ fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
     );
     assert!(
         !draft.phoenix,
-        "CopyTask does not carry the flag — the copy answers the step fresh"
+        "CopyTask does not carry the flag — the copy answers the tag step fresh"
     );
 }
 
@@ -3016,22 +3062,20 @@ fn esc_in_normal_clears_active_search() {
     assert_eq!(app.search.query, "");
 }
 
-// -- InputPhoenix ----------------------------------------------------------
+// -- Phoenix arming at the tag step ---------------------------------------
 //
-// The creation form's last step (CreateTask in docs/specs/tasks.allium): a
-// single-key picker on the same rule as the InputTag and InputWrapUpMode steps
-// before it. 'p' arms the recurrence, Enter alone declines it, Esc cancels,
-// and every other key is a no-op — so an ordinary task costs one extra
-// keypress and no decision, and a stray key answers nothing.
+// phoenix has no step of its own. It is armed by `p` at the tag picker, which
+// then re-opens the SAME step with `p` dropped from the accepted set so the
+// operator picks the task's real tag (CreateTask: PhoenixArming, in
+// docs/specs/tasks.allium).
 
-/// An app parked on the phoenix step with a filled draft, as the form reaches
-/// it after InputWrapUpMode.
-fn app_on_phoenix_step() -> App {
+/// An app parked on the tag picker with a filled draft, as the form reaches it
+/// after InputTitle.
+fn app_on_tag_step() -> App {
     let mut app = App::new(vec![]);
-    app.input.mode = InputMode::InputPhoenix;
+    app.input.mode = InputMode::InputTag;
     app.input.task_draft = Some(TaskDraft {
         title: "Weekly dep audit".to_string(),
-        description: "desc".to_string(),
         repo_path: "/tmp".to_string(),
         ..Default::default()
     });
@@ -3047,8 +3091,13 @@ fn inserted_draft(cmds: &[Command]) -> Option<TaskDraft> {
     })
 }
 
+fn draft_of(app: &App) -> &TaskDraft {
+    app.input.task_draft.as_ref().expect("the form has a draft")
+}
+
+/// Wrap-up used to advance to a phoenix step. It is the form's last step now.
 #[test]
-fn submitting_wrap_up_mode_advances_to_the_phoenix_step() {
+fn submitting_wrap_up_mode_creates_the_task() {
     let mut app = App::new(vec![]);
     app.input.mode = InputMode::InputWrapUpMode;
     app.input.task_draft = Some(TaskDraft::default());
@@ -3057,72 +3106,183 @@ fn submitting_wrap_up_mode_advances_to_the_phoenix_step() {
         crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
 
-    assert_eq!(app.input.mode, InputMode::InputPhoenix);
+    assert_eq!(app.input.mode, InputMode::Normal);
     assert!(
-        inserted_draft(&cmds).is_none(),
-        "wrap-up is no longer the last step; nothing is created yet"
+        inserted_draft(&cmds).is_some(),
+        "wrap-up is the last step; answering it creates the task"
     );
 }
 
 #[test]
-fn p_arms_the_phoenix_flag_and_creates_the_task() {
-    let mut app = app_on_phoenix_step();
+fn p_arms_phoenix_and_reopens_the_tag_step() {
+    let mut app = app_on_tag_step();
 
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('p'))));
 
-    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(draft_of(&app).phoenix, "p arms the recurrence");
+    assert_eq!(
+        app.input.mode,
+        InputMode::InputTag,
+        "the picker re-opens so the real tag can still be picked"
+    );
+    assert_eq!(draft_of(&app).tag, None, "p is not a tag");
     assert!(
-        inserted_draft(&cmds).expect("the task is created").phoenix,
-        "p arms the recurrence"
+        cmds.is_empty(),
+        "arming phoenix advances nothing, so it opens no editor and creates no task"
     );
 }
 
-/// Enter alone means no, so the ordinary task takes one keypress and no
-/// decision.
+/// The prompt loses `[p]hoenix` on the second pass, and so does the accepted
+/// set: a second `p` joins the silently-ignored keys.
 #[test]
-fn enter_declines_the_flag_and_creates_the_task() {
-    let mut app = app_on_phoenix_step();
+fn a_second_p_is_ignored_once_phoenix_is_armed() {
+    let mut app = app_on_tag_step();
+    app.handle_key(make_key(KeyCode::Char('p')));
 
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('p'))));
 
-    assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(
-        !inserted_draft(&cmds)
-            .expect("Enter creates the task")
-            .phoenix,
-        "Enter must not arm the recurrence"
+    assert_eq!(
+        app.input.mode,
+        InputMode::InputTag,
+        "the second p must leave the step open"
+    );
+    assert_eq!(draft_of(&app).tag, None);
+    assert!(cmds.is_empty(), "the second p must advance nothing");
+}
+
+#[test]
+fn the_second_pass_picks_a_tag_and_keeps_the_armed_flag() {
+    let mut app = app_on_tag_step();
+    app.handle_key(make_key(KeyCode::Char('p')));
+
+    app.handle_key(make_key(KeyCode::Char('b')));
+
+    let draft = draft_of(&app);
+    assert_eq!(draft.tag, Some(TaskTag::Bug));
+    assert!(draft.phoenix, "picking a tag must not disarm phoenix");
+    assert_eq!(
+        app.input.mode,
+        InputMode::InputDescription,
+        "the second pass advances the form like the first would have"
     );
 }
 
-/// The step no longer treats "not the affirmative key" as an answer. 'y' is
-/// listed because it WAS the affirmative one, and 'P' because the sibling
-/// pickers are lowercase-only too — neither may create a task by itself.
+/// A phoenix task with no tag is legal: Enter on the second pass means "no
+/// explicit pick", exactly as it does on the first.
 #[test]
-fn unrecognised_keys_leave_the_phoenix_step_open() {
-    for key in [KeyCode::Char('y'), KeyCode::Char('P')] {
-        let mut app = app_on_phoenix_step();
-        let cmds = without_usage(app.handle_key(make_key(key)));
-        assert_eq!(
-            app.input.mode,
-            InputMode::InputPhoenix,
-            "{key:?} must leave the step open"
-        );
-        assert!(
-            inserted_draft(&cmds).is_none(),
-            "{key:?} must not create a task"
-        );
-    }
+fn the_second_pass_accepts_enter_for_no_tag() {
+    let mut app = app_on_tag_step();
+    app.handle_key(make_key(KeyCode::Char('p')));
+
+    app.handle_key(make_key(KeyCode::Enter));
+
+    let draft = draft_of(&app);
+    assert_eq!(draft.tag, None);
+    assert!(draft.phoenix);
+    assert_eq!(app.input.mode, InputMode::InputDescription);
 }
 
+/// Esc is not a step-back that disarms phoenix — the re-opened picker is the
+/// same step, so Esc cancels the whole form as it does everywhere else.
 #[test]
-fn esc_cancels_creation_from_the_phoenix_step() {
-    let mut app = app_on_phoenix_step();
+fn esc_after_arming_phoenix_cancels_the_whole_form() {
+    let mut app = app_on_tag_step();
+    app.handle_key(make_key(KeyCode::Char('p')));
 
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(
-        inserted_draft(&cmds).is_none(),
-        "Esc creates nothing, as it does at every other step"
+        app.input.task_draft.is_none(),
+        "Esc discards the draft, armed flag and all"
     );
+    assert!(inserted_draft(&cmds).is_none(), "Esc creates nothing");
+}
+
+/// EnterKeepsTheDraft (CreateTask in docs/specs/tasks.allium): Enter means "no
+/// explicit pick", not "clear the tag". It matters for CopyTask, which seeds
+/// the draft's tag from the source task.
+#[test]
+fn enter_at_the_tag_step_keeps_a_prefilled_tag() {
+    let mut app = app_on_tag_step();
+    if let Some(draft) = app.input.task_draft.as_mut() {
+        draft.title = "Copy of: Weekly dep audit".to_string();
+        draft.tag = Some(TaskTag::Chore);
+    }
+
+    app.handle_key(make_key(KeyCode::Enter));
+
+    assert_eq!(
+        draft_of(&app).tag,
+        Some(TaskTag::Chore),
+        "Enter must keep the copied tag, not clear it"
+    );
+}
+
+/// A finished copy must not leave the copy marker set: the next new-task form
+/// would then take the tag step's copy branch and skip the description editor.
+#[test]
+fn finishing_a_copy_clears_the_copy_marker() {
+    let mut app = make_app();
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0);
+
+    app.handle_key(make_key(KeyCode::Char('c')));
+    app.handle_key(make_key(KeyCode::Enter));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitRepoPath("/tmp".to_string()),
+    ));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
+    ));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
+    ));
+    assert_eq!(app.input.mode, InputMode::Normal, "the copy was created");
+
+    // A fresh new-task form must reach the description editor as usual.
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::StartNewTask,
+    ));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitTitle("T".to_string()),
+    ));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
+
+    assert_eq!(app.input.mode, InputMode::InputDescription);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Editor(crate::tui::commands::EditorCommand::PopOut(
+                EditKind::Description { is_epic: false }
+            ))
+        )),
+        "the new task must still pop the description editor, got {cmds:?}"
+    );
+}
+
+/// The whole form, end to end, with phoenix armed at the tag step. Guards the
+/// flag surviving the four steps that follow it.
+#[test]
+fn a_draft_armed_at_the_tag_step_is_created_as_a_phoenix() {
+    let mut app = app_on_tag_step();
+
+    app.handle_key(make_key(KeyCode::Char('p')));
+    app.handle_key(make_key(KeyCode::Char('c')));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitDescription("desc".to_string()),
+    ));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitRepoPath("/tmp".to_string()),
+    ));
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
+    ));
+    let cmds = app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
+    ));
+
+    let draft = inserted_draft(&cmds).expect("the form creates the task");
+    assert!(draft.phoenix, "the armed flag must survive to creation");
+    assert_eq!(draft.tag, Some(TaskTag::Chore));
 }

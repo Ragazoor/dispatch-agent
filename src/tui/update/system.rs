@@ -72,9 +72,10 @@ impl App {
                     tag: None,
                     base_branch: DEFAULT_BASE_BRANCH.to_string(),
                     wrap_up_mode: None,
-                    // Quick dispatch does not offer the phoenix step: a quick
-                    // task is a one-off by construction, and the agent can arm
-                    // the flag through update_task once it knows the work.
+                    // Quick dispatch runs no tag picker, so there is nowhere
+                    // for the p key that arms phoenix to live — and a quick
+                    // task is a one-off by construction anyway. The agent can
+                    // arm the flag through update_task once it knows the work.
                     phoenix: false,
                 },
                 epic_id,
