@@ -212,6 +212,32 @@ Parallel to DB trait narrowing, the service layer exposes these traits in `src/s
 
 Consumers that call task or epic operations should hold `Arc<dyn TaskServiceApi>` / `Arc<dyn EpicServiceApi>` rather than the concrete struct. This lets unit tests inject a mock service without a real database — construct `McpState` directly (all fields are `pub` or `pub(crate)`) and pass a custom `Arc<dyn TaskServiceApi>`.
 
+### Two things that must agree: make them one definition before you assert they match
+
+The seam macros below are one instance of a general preference in this repo.
+When two places must name the same value, the first move is to make it *one*
+definition that both expand — not two definitions plus a test asserting they
+are equal. A test says "these agreed when CI last ran"; a shared definition
+says "there is nothing here that could disagree", and it deletes the test.
+
+`src/claude_paths.rs` is the second instance, and the awkward one, because the
+two consumers want different shapes: a shell-literal `const` on one side
+(assembled with `concat!`) and `Path::join` calls on the other. `macro_rules!`
+bridges that — `concat!` accepts literals and macro expansions but **not** a
+`const` item, which is the whole reason those are macros. Reach for the same
+trick when a value has to appear both inside a compile-time string and as
+ordinary Rust.
+
+Two caveats that came out of building it:
+
+- **Keep both sides pinned to hand-written expectations.** Sharing the
+  definition stops the halves drifting; it does not stop the shared value being
+  wrong. Expectations derived from the same tokens as the code agree with
+  themselves no matter what, so write them out.
+- **Delete the binding test once the definition is shared.** A test comparing
+  two things built from one token is a tautology wearing the costume of
+  coverage, which is worse than no test.
+
 ### Each seam is declared once — edit the spec macro, not the impls
 
 Every seam's signature list lives in exactly one place: a `macro_rules!` *spec* macro in `src/service/api.rs` (`task_service_api!`, `epic_service_api!`, `todo_service_api!`, `learning_service_api!`). A spec macro takes the name of an *emitter* macro and replays its signature list into it, so trait, impl, and mock scaffolding are all generated from the same tokens and cannot drift:

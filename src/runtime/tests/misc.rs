@@ -1063,3 +1063,39 @@ mod bootstrap {
         );
     }
 }
+
+/// `StartupPaths::resolve` itself — deliberately outside `mod bootstrap`, whose
+/// fixture rule is that a bootstrap test is never handed the operator's real
+/// locations. These resolve and compare only: nothing boots, and nothing is
+/// written anywhere.
+mod startup_paths {
+    use super::*;
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `SpawnSitesAndStartupNameTheSameConfigurationDirectory`. The writer-side
+    /// link for the settings file: `src/dispatch/tests.rs` binds the spawn
+    /// constant's literal to the configuration-directory layout, and this binds
+    /// startup to the same lookup. Neither alone rules out a `resolve` that
+    /// quietly hands startup somewhere else.
+    ///
+    /// This mirrors `resolve`'s two lines on purpose. It cannot fail for a
+    /// change in what those lookups *return* — that is the dispatch-side test's
+    /// job — only if `resolve` stops delegating to them.
+    ///
+    /// `src/main.rs::cmd_tui` needs no test of its own: `StartupPaths`' fields
+    /// are private to this module, so `resolve` is the only way a caller
+    /// outside it can obtain one. That link is compiler-enforced, not merely
+    /// asserted.
+    #[test]
+    fn resolve_delegates_to_the_shared_configuration_directory_lookup() {
+        let paths = StartupPaths::resolve().expect("$HOME must be set");
+
+        assert_eq!(
+            paths.claude_dir,
+            crate::setup::claude_dir().expect("$HOME must be set"),
+            "startup must be handed the same configuration directory setup \
+             resolves — that is the directory the spawn constant's literals \
+             are checked against"
+        );
+    }
+}

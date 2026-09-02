@@ -34,9 +34,20 @@ pub use plugins::{install_example_script, remove_plugin, seed_feed_epics};
 /// [`SetupPaths::resolve`], [`UninstallPaths::resolve`] and
 /// `runtime::StartupPaths::resolve`. Nothing re-derives it mid-flow, which is
 /// what lets a test point a whole flow at a temp directory.
+///
+/// The directory's name comes from `crate::claude_paths`, the one place it is
+/// written down — the spawn constant expands the same token. `$HOME` is the
+/// other half of the agreement: the spawn constant names this directory as
+/// `~/…`, which the launching shell resolves under the home directory, so the
+/// two halves agree only while this lookup reads nothing but `$HOME`. Adding a
+/// second input here (an operator-settable configuration directory, say) parts
+/// them silently for whoever sets it, and the spawn constant would have to stop
+/// naming the location outright in the same change. See
+/// docs/specs/dispatch.allium:
+/// `SpawnSitesAndStartupNameTheSameConfigurationDirectory`.
 pub(super) fn claude_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("$HOME is not set")?;
-    Ok(PathBuf::from(home).join(".claude"))
+    Ok(PathBuf::from(home).join(crate::claude_paths::claude_dir_name!()))
 }
 
 /// Path to Claude Code's user-global config file (`~/.claude.json`).
@@ -348,17 +359,26 @@ pub(super) async fn run_setup_in(
     // 2. Plugin (hooks, skills, commands)
     let plugin_base = plugins::plugin_dir_under(&paths.claude_dir);
     if plugins::plugin_needs_update_in(&plugin_base)? {
-        if yes || confirmer.confirm("Install dispatch plugin (skills, hooks, commands) to ~/.claude/plugins/local/dispatch/?")? {
+        // The prompt and the report name `plugin_base` itself rather than a
+        // hand-written copy of the layout, which a rename would leave stale and
+        // pointing the operator at a directory nothing writes to.
+        if yes
+            || confirmer.confirm(&format!(
+                "Install dispatch plugin (skills, hooks, commands) to {}/?",
+                plugin_base.display()
+            ))?
+        {
             plugins::install_plugin_in(&plugin_base)?;
-            println!("Plugin: installed dispatch plugin to ~/.claude/plugins/local/dispatch/");
+            println!(
+                "Plugin: installed dispatch plugin to {}/",
+                plugin_base.display()
+            );
             let skills: Vec<String> = plugins::PLUGIN_DIR
                 .get_dir("skills")
                 .map(|d| {
                     let mut names: Vec<String> = d
                         .dirs()
-                        .filter_map(|sd| {
-                            sd.path().file_name()?.to_str().map(|n| format!("/{n}"))
-                        })
+                        .filter_map(|sd| sd.path().file_name()?.to_str().map(|n| format!("/{n}")))
                         .collect();
                     names.sort();
                     names
@@ -370,12 +390,7 @@ pub(super) async fn run_setup_in(
                 .map(|d| {
                     let mut names: Vec<String> = d
                         .files()
-                        .filter_map(|f| {
-                            f.path()
-                                .file_stem()?
-                                .to_str()
-                                .map(|n| format!("/{n}"))
-                        })
+                        .filter_map(|f| f.path().file_stem()?.to_str().map(|n| format!("/{n}")))
                         .collect();
                     names.sort();
                     names
@@ -1385,5 +1400,74 @@ mod tests {
 
         // Still exactly one seeded epic (seeding stayed idempotent).
         assert_eq!(db.list_epics().await.unwrap().len(), 1);
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `SpawnSitesAndStartupNameTheSameConfigurationDirectory`. The writing
+    /// side's half of the layout, pinned to written-out expectations.
+    ///
+    /// The spawn constant's half is pinned the same way, against its own
+    /// hand-written literal, by `spawn_constant_has_exactly_one_space_between_flags`
+    /// in `src/dispatch/tests.rs`. Both halves expand one shared definition, so
+    /// a rename cannot move only one of them — but it must fail *visibly on
+    /// both sides*, which is what these written-out expectations are for.
+    /// Deriving them from the shared tokens instead would make them agree with
+    /// the code no matter what it said.
+    ///
+    /// The `$HOME` assertion is the other half of the agreement, and the one
+    /// thing here that is not compile-time: the spawn constant names the
+    /// directory as `~/…`, which the launching shell resolves under the home
+    /// directory. It cannot see a lookup that gained a *second* input — that
+    /// would match wherever the new input is unset, CI included, and part only
+    /// for the operators who set it.
+    #[test]
+    fn the_configuration_layout_is_what_the_spawn_constant_names() {
+        let home = std::env::var("HOME").expect("$HOME must be set");
+        assert_eq!(
+            claude_dir().expect("$HOME must be set"),
+            std::path::Path::new(&home).join(".claude"),
+            "the production lookup must be the home directory plus the name \
+             the spawn constant expands, and nothing else"
+        );
+
+        let claude_dir = std::path::Path::new("/h/.claude");
+        assert_eq!(
+            statusline::settings_path(claude_dir),
+            std::path::Path::new("/h/.claude/dispatch-statusline.json")
+        );
+        assert_eq!(
+            plugins::plugin_dir_under(claude_dir),
+            std::path::Path::new("/h/.claude/plugins/local/dispatch")
+        );
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `SpawnSitesAndStartupNameTheSameConfigurationDirectory`. The plugin
+    /// directory's writer-side link.
+    ///
+    /// `dispatch setup` — not startup — is what installs the plugin, so the
+    /// chain for that half runs through `SetupPaths`, not `StartupPaths`. This
+    /// pins that the flow which actually writes there resolves the shared
+    /// layout rather than one of its own.
+    ///
+    /// Every other test of this flow injects temp directories (that is what
+    /// `SetupPaths` exists for), so without this the production resolution is
+    /// exercised by nothing.
+    #[test]
+    fn setup_paths_resolve_to_the_shared_configuration_directory() {
+        let paths = SetupPaths::resolve().expect("$HOME must be set");
+        let expected = claude_dir().expect("$HOME must be set");
+
+        assert_eq!(
+            paths.claude_dir, expected,
+            "setup must install under the same configuration directory the \
+             spawn constant names"
+        );
+        assert_eq!(
+            paths.statusline_path,
+            statusline::settings_path(&expected),
+            "the settings file setup writes and the one startup rewrites must \
+             be the same file"
+        );
     }
 }

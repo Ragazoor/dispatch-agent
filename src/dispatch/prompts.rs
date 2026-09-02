@@ -7,6 +7,8 @@ use crate::service::embeddings::{
     RagRankParams,
 };
 
+use crate::claude_paths::{claude_dir_name, plugin_dir_rel, statusline_settings_name};
+
 use super::worktree::StartPoint;
 
 /// Flags added to all Claude agent invocations. `--plugin-dir` so dispatched
@@ -15,19 +17,29 @@ use super::worktree::StartPoint;
 /// the `dispatch statusline` decorator (see docs/specs/dispatch.allium:
 /// TokenBudgetIndicator).
 ///
-/// Both paths are fixed literals on purpose. This string is interpolated into
-/// shell command lines sent through `tmux send-keys`, so a runtime path could
-/// break argument splitting on any `$HOME` containing a space; and a `const`
-/// cannot hold a runtime value anyway. Runtime paths live inside the settings
-/// file, written by `src/setup/statusline.rs`.
+/// Both paths are fixed literals on purpose: a `const` has no runtime source,
+/// so these flags cannot go missing, and `claude` refuses to start without the
+/// settings file. Runtime paths live inside that file, written by
+/// `src/setup/statusline.rs`.
+///
+/// The path *segments* are not written out here — they expand from
+/// `crate::claude_paths`, which is also where the writing side gets them and
+/// where the reasoning lives. See docs/specs/dispatch.allium:
+/// `SpawnSitesAndStartupNameTheSameConfigurationDirectory`.
 ///
 /// Built with `concat!` rather than a backslash line-continuation inside the
 /// literal: a `\` at end-of-line inside a Rust string swallows the newline
 /// *and* all leading whitespace on the next line, which can silently collapse
 /// or duplicate the space between the two flags.
 pub(super) const DISPATCH_PLUGIN_DIR: &str = concat!(
-    "--plugin-dir ~/.claude/plugins/local/dispatch",
-    " --settings ~/.claude/dispatch-statusline.json"
+    "--plugin-dir ~/",
+    claude_dir_name!(),
+    "/",
+    plugin_dir_rel!(),
+    " --settings ~/",
+    claude_dir_name!(),
+    "/",
+    statusline_settings_name!()
 );
 
 /// Epic context passed to prompt builders so agents know about their epic.

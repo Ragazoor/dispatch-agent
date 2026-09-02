@@ -1,10 +1,12 @@
 //! Generates the dispatch-owned statusLine settings file that is injected into
 //! every dispatch-spawned Claude session via `--settings`.
 //!
-//! The file lives at a **fixed literal path** (`~/.claude/dispatch-statusline.json`)
-//! so the spawn constant in `src/dispatch/prompts.rs` stays a compile-time
-//! `const` with no runtime path and no shell-quoting hazard. Runtime paths live
-//! inside this file instead, where they can be quoted properly.
+//! The file lives at a path fixed at compile time
+//! (`~/.claude/dispatch-statusline.json`), so the spawn constant in
+//! `src/dispatch/prompts.rs` stays a `const` whose flags cannot go missing.
+//! Runtime paths live inside this file instead, where they are quoted properly.
+//! The name itself is not written here — it expands from `crate::claude_paths`,
+//! the same token the spawn constant uses.
 //!
 //! Note it is NOT placed under the plugin dir: `remove_stale_files` deletes any
 //! non-embedded file there. And it is NOT `~/.claude/settings.json`, which
@@ -19,7 +21,7 @@ use std::path::Path;
 /// `pub(crate)`: also read by `runtime::bootstrap` (`src/runtime/mod.rs`),
 /// which recreates this file at TUI startup if `dispatch setup` was never
 /// run — see the module doc comment above.
-pub(crate) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
+pub(crate) const SETTINGS_FILE_NAME: &str = crate::claude_paths::statusline_settings_name!();
 
 /// The settings file's full path under a resolved `~/.claude` directory.
 ///

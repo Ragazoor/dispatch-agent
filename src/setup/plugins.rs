@@ -26,7 +26,7 @@ pub(super) fn plugin_dir() -> Result<PathBuf> {
 /// directory. Kept separate from [`plugin_dir`] so orchestration code can
 /// inject a temp directory in tests.
 pub(super) fn plugin_dir_under(claude_dir: &Path) -> PathBuf {
-    claude_dir.join("plugins").join("local").join("dispatch")
+    claude_dir.join(crate::claude_paths::plugin_dir_rel!())
 }
 
 fn is_executable(path: &std::path::Path) -> bool {

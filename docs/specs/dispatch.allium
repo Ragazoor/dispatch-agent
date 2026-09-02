@@ -1813,6 +1813,63 @@ surface StatusLineDecorator {
         -- derived from anything here — the lookup itself is the hazard, so
         -- being handed the directory is the whole of the fix.
 
+    @guarantee SpawnSitesAndStartupNameTheSameConfigurationDirectory
+        -- Dispatch owns two things inside the operator's Claude Code
+        -- configuration directory: the decorator's settings file, and the
+        -- directory holding dispatch's own agent-facing plugin. Each has
+        -- exactly one location, and both halves of the system agree on it.
+        -- The directory the writing side is handed is the same directory
+        -- every spawned session is pointed at when it is launched.
+        --
+        -- The writing side is two flows, not one: startup keeps the settings
+        -- file current, and installation puts the plugin in place. Neither
+        -- looks the directory up; each is handed it (see
+        -- SettingsLocationIsAnExplicitStartupInput). The reading side is the
+        -- text that launches a session, which names both locations outright,
+        -- identically for every session, because that text is assembled once
+        -- and is not free to vary per run.
+        --
+        -- Those two mechanisms stay separate, but they are not two
+        -- definitions. The names of the directory and of what sits inside it
+        -- are written down once, and both halves are built from that one
+        -- statement — the launch text by embedding it, the writing side by
+        -- appending it to a resolved location. Renaming any of them is
+        -- therefore a single edit that necessarily moves both halves at once:
+        -- neither half holds a copy the edit could miss. Both are still
+        -- pinned, separately, to expectations written out by hand, so a
+        -- rename fails visibly on each side rather than quietly carrying
+        -- through. Agent-facing copy that merely quotes a location for a human
+        -- to read stands outside this — it is prose, not a half of the
+        -- agreement, and nothing is launched from it.
+        --
+        -- What is left over, and it is one thing. The launch text names the
+        -- directory relative to the home directory, and a shell resolves it
+        -- there. The agreement therefore also needs the configuration
+        -- directory to be found under the home directory — which is not a
+        -- name, so it is not covered by the shared statement above, and is
+        -- asserted instead. That assertion has a limit worth stating plainly:
+        -- a lookup which consulted some further input alongside the home
+        -- directory would keep matching everywhere that input was absent,
+        -- which is everywhere the assertion runs, and part only for the
+        -- operators who set it. So making the directory operator-configurable
+        -- is a change that must move both halves in the same commit and give
+        -- up naming the location outright. Nothing can catch that one after
+        -- the fact, and no structure prevents it either: the lookup is one
+        -- small function, and a second input is a short edit inside it. What
+        -- stands there instead is a written warning at that exact spot. That
+        -- is weaker than everything else in this guarantee, and is said
+        -- plainly so nobody mistakes it for more.
+        --
+        -- Leaving the agreement to hold by coincidence meant a change on
+        -- either side split the two in silence: a settings file written where
+        -- no session ever loaded it, a plugin installed where no session ever
+        -- found it, and every session launched against a location nothing had
+        -- written. A session refuses to start at all without that settings
+        -- file, so every dispatch failed at the moment of spawning, and
+        -- nothing anywhere named the cause. The failure is total and says
+        -- nothing about its own origin, which is why the agreement is worth
+        -- making structural rather than assuming.
+
     @guarantee NeverChainsToItself
         -- When the status line the decorator would stand in for is itself a
         -- dispatch statusline invocation, nothing is chained. An empty status
@@ -1829,7 +1886,22 @@ surface StatusLineDecorator {
         -- write — absence is only the commonest such difference, and `claude`
         -- refuses to start without it. The locations it writes into arrive as
         -- `StartupPaths`, resolved once in src/main.rs; the same shape
-        -- src/setup/mod.rs already uses for setup and uninstall.
+        -- src/setup/mod.rs already uses for setup and uninstall. The path
+        -- segments are stated once, in src/claude_paths.rs, as macros rather
+        -- than consts because the reading side assembles them with concat!,
+        -- which takes literals and macro expansions but not a const item. The
+        -- reader is src/dispatch/prompts.rs::DISPATCH_PLUGIN_DIR; the writers
+        -- are src/setup/mod.rs::claude_dir,
+        -- src/setup/statusline.rs::settings_path and
+        -- src/setup/plugins.rs::plugin_dir_under. Both halves are pinned to
+        -- hand-written expectations — src/dispatch/tests.rs for the constant,
+        -- src/setup/mod.rs's own tests for the layout, which also carry the
+        -- home-directory link. Each writer's resolution is pinned too:
+        -- `StartupPaths::resolve` in src/runtime/tests/misc.rs,
+        -- `SetupPaths::resolve` in src/setup/mod.rs's tests.
+        -- src/main.rs::cmd_tui needs no test: `StartupPaths`' fields are
+        -- private to src/runtime/mod.rs, so `resolve` is the only way to
+        -- obtain one.
 }
 
 surface SandboxedAgentExecution {
