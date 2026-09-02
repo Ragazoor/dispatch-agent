@@ -98,6 +98,10 @@ pub enum DerivedSection {
     /// `dependabot` tags mean the task is reviewing a PR rather than authoring
     /// one, so the ball is with the other author.
     ChangesRequestedByMe,
+    /// An approval *the user* gave on someone else's PR — same tags, same
+    /// direction. Unlike an approval on the user's own PR, there is no merge
+    /// left to perform.
+    ApprovedByMe,
 }
 
 impl DerivedSection {
@@ -105,17 +109,22 @@ impl DerivedSection {
     /// already names the section.
     ///
     /// `Parked` is tested first: it means there is no PR at all, which dominates
-    /// a review decision that was somehow recorded without one.
+    /// either review decision that was somehow recorded without one.
     pub fn for_task(task: &Task) -> Option<Self> {
         let has_pr = task.url.as_ref().is_some_and(|u| u.is_pr());
         if task.status == TaskStatus::Review && task.is_detached() && !has_pr {
             return Some(Self::Parked);
         }
-        if task.sub_status == SubStatus::ChangesRequested && task.tag.is_some_and(|t| t.is_review())
-        {
-            return Some(Self::ChangesRequestedByMe);
+        if !task.tag.is_some_and(|t| t.is_review()) {
+            return None;
         }
-        None
+        // The two sub-statuses that record a review *decision*. On a task that
+        // reviews someone else's PR, that decision was the user's own.
+        match task.sub_status {
+            SubStatus::ChangesRequested => Some(Self::ChangesRequestedByMe),
+            SubStatus::Approved => Some(Self::ApprovedByMe),
+            _ => None,
+        }
     }
 
     /// Sort priority for column grouping (lower = more urgent = top of column),
@@ -142,6 +151,10 @@ impl DerivedSection {
                 priority: PRIORITY_CHANGES_REQUESTED_BY_ME,
                 header_label: "changes requested by me",
             },
+            Self::ApprovedByMe => DerivedSectionProperties {
+                priority: PRIORITY_APPROVED_BY_ME,
+                header_label: "approved by me",
+            },
         }
     }
 }
@@ -152,12 +165,13 @@ struct DerivedSectionProperties {
     header_label: &'static str,
 }
 
-// Sort slots for the derived sections. Both sit under every named `SubStatus`
-// slot — neither section is waiting on the user — and both are derived from the
-// model's lowest slot rather than hardcoded, so inserting a new `SubStatus`
-// priority tier can't silently desync them.
+// Sort slots for the derived sections. All three sit under every named
+// `SubStatus` slot — none of these sections is waiting on the user — and all are
+// derived from the model's lowest slot rather than hardcoded, so inserting a new
+// `SubStatus` priority tier can't silently desync them.
 const PRIORITY_PARKED: u8 = SubStatus::AwaitingReview.column_priority() + 1;
 const PRIORITY_CHANGES_REQUESTED_BY_ME: u8 = PRIORITY_PARKED + 1;
+const PRIORITY_APPROVED_BY_ME: u8 = PRIORITY_CHANGES_REQUESTED_BY_ME + 1;
 
 /// Column sort priority for a task: the [`DerivedSection`] slot when one
 /// applies, else the task's own [`SubStatus`] slot.
@@ -288,6 +302,14 @@ mod derived_section_tests {
         ))
     }
 
+    /// A live Review task that has a PR — the common case for every section
+    /// except `parked`.
+    fn with_pr(sub_status: SubStatus, tag: Option<TaskTag>) -> Task {
+        let mut t = review_task(sub_status, tag);
+        t.url = pr_url();
+        t
+    }
+
     // --- parked ---
 
     #[test]
@@ -347,24 +369,27 @@ mod derived_section_tests {
         assert_eq!(task_header_label(&t), "awaiting review");
     }
 
-    /// Sub-status is deliberately not part of the parked condition: with no PR
-    /// there is nothing for a conflict to be about either, so parked wins.
+    /// Sub-status is deliberately not part of the parked condition: parked
+    /// means there is no PR at all, so it dominates every sub-status that could
+    /// only be about one — a conflict, or either review decision somehow
+    /// recorded without a PR.
     #[test]
-    fn parked_wins_over_conflict() {
-        let mut t = detached_review_task();
-        t.sub_status = SubStatus::Conflict;
-        assert_eq!(DerivedSection::for_task(&t), Some(DerivedSection::Parked));
-        assert_eq!(task_header_label(&t), "parked");
-    }
-
-    /// Parked is defined by having no PR at all, so it dominates any review
-    /// decision that was somehow recorded without one.
-    #[test]
-    fn parked_wins_over_changes_requested_by_me() {
-        let mut t = detached_review_task();
-        t.sub_status = SubStatus::ChangesRequested;
-        t.tag = Some(TaskTag::PrReview);
-        assert_eq!(task_header_label(&t), "parked");
+    fn parked_wins_over_every_pr_bearing_sub_status() {
+        for ss in [
+            SubStatus::Conflict,
+            SubStatus::ChangesRequested,
+            SubStatus::Approved,
+        ] {
+            let mut t = detached_review_task();
+            t.sub_status = ss;
+            t.tag = Some(TaskTag::PrReview);
+            assert_eq!(
+                DerivedSection::for_task(&t),
+                Some(DerivedSection::Parked),
+                "{ss:?}"
+            );
+            assert_eq!(task_header_label(&t), "parked", "{ss:?}");
+        }
     }
 
     /// A closed-without-merge PR still *has* a url, so it keeps its own
@@ -378,50 +403,68 @@ mod derived_section_tests {
         assert_eq!(task_header_label(&t), SubStatus::PrClosed.header_label());
     }
 
-    // --- changes requested by me ---
+    // --- review decisions the user made themselves ---
+
+    /// The two sub-statuses that record a review decision, and the section each
+    /// becomes on a task that reviews someone else's PR. One table so a third
+    /// decision is one row, not another pair of cloned tests.
+    const BY_ME: [(SubStatus, DerivedSection, &str); 2] = [
+        (
+            SubStatus::ChangesRequested,
+            DerivedSection::ChangesRequestedByMe,
+            "changes requested by me",
+        ),
+        (
+            SubStatus::Approved,
+            DerivedSection::ApprovedByMe,
+            "approved by me",
+        ),
+    ];
 
     #[test]
-    fn review_tagged_changes_requested_is_by_me() {
-        for tag in [TaskTag::PrReview, TaskTag::Dependabot] {
-            let mut t = review_task(SubStatus::ChangesRequested, Some(tag));
-            t.url = pr_url();
-            assert_eq!(
-                DerivedSection::for_task(&t),
-                Some(DerivedSection::ChangesRequestedByMe),
-                "{tag:?}"
-            );
-            assert_eq!(task_header_label(&t), "changes requested by me", "{tag:?}");
-            assert!(
-                task_column_priority(&t) > task_column_priority(&detached_review_task()),
-                "{tag:?} should sort below parked"
-            );
+    fn a_review_tagged_decision_is_by_me() {
+        for (ss, section, label) in BY_ME {
+            for tag in [TaskTag::PrReview, TaskTag::Dependabot] {
+                let t = with_pr(ss, Some(tag));
+                assert_eq!(
+                    DerivedSection::for_task(&t),
+                    Some(section),
+                    "{ss:?}/{tag:?}"
+                );
+                assert_eq!(task_header_label(&t), label, "{ss:?}/{tag:?}");
+                assert!(
+                    task_column_priority(&t) > task_column_priority(&detached_review_task()),
+                    "{ss:?}/{tag:?} should sort below parked"
+                );
+            }
         }
     }
 
     #[test]
-    fn non_review_tagged_changes_requested_keeps_the_model_label() {
-        for tag in [None, Some(TaskTag::Feature), Some(TaskTag::Bug)] {
-            let mut t = review_task(SubStatus::ChangesRequested, tag);
-            t.url = pr_url();
-            assert_eq!(task_header_label(&t), "changes requested", "{tag:?}");
-            assert_eq!(
-                task_column_priority(&t),
-                SubStatus::ChangesRequested.column_priority(),
-                "{tag:?}"
-            );
+    fn a_non_review_tagged_decision_keeps_the_model_label() {
+        for (ss, _, _) in BY_ME {
+            for tag in [None, Some(TaskTag::Feature), Some(TaskTag::Bug)] {
+                let t = with_pr(ss, tag);
+                assert_eq!(DerivedSection::for_task(&t), None, "{ss:?}/{tag:?}");
+                assert_eq!(task_header_label(&t), ss.header_label(), "{ss:?}/{tag:?}");
+                assert_eq!(
+                    task_column_priority(&t),
+                    ss.column_priority(),
+                    "{ss:?}/{tag:?}"
+                );
+            }
         }
     }
 
-    /// The override is scoped to `changes_requested`: an approved PR the user
-    /// reviewed is still just approved.
+    /// The override is scoped to the two review *decisions*: a review-tagged
+    /// task in any other sub-status keeps the model's own label.
     #[test]
     fn review_tag_does_not_affect_other_sub_statuses() {
         for &ss in SubStatus::ALL {
-            if ss == SubStatus::ChangesRequested {
+            if BY_ME.iter().any(|&(decision, _, _)| decision == ss) {
                 continue;
             }
-            let mut t = review_task(ss, Some(TaskTag::PrReview));
-            t.url = pr_url();
+            let t = with_pr(ss, Some(TaskTag::PrReview));
             assert_eq!(task_header_label(&t), ss.header_label(), "{ss:?}");
             assert_eq!(task_column_priority(&t), ss.column_priority(), "{ss:?}");
         }
@@ -432,12 +475,6 @@ mod derived_section_tests {
     /// The full Review-column section order, asserted end to end.
     #[test]
     fn review_section_order_is_urgent_first() {
-        let with_pr = |ss: SubStatus, tag: Option<TaskTag>| {
-            let mut t = review_task(ss, tag);
-            t.url = pr_url();
-            t
-        };
-
         let sections = [
             with_pr(SubStatus::Conflict, None),
             with_pr(SubStatus::PrClosed, None),
@@ -446,6 +483,7 @@ mod derived_section_tests {
             with_pr(SubStatus::AwaitingReview, None),
             detached_review_task(),
             with_pr(SubStatus::ChangesRequested, Some(TaskTag::PrReview)),
+            with_pr(SubStatus::Approved, Some(TaskTag::PrReview)),
         ];
 
         for pair in sections.windows(2) {

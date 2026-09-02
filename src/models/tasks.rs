@@ -721,6 +721,11 @@ impl TaskTag {
     /// Whether this tag routes to a PR-review agent (PR review or
     /// Dependabot). Review tasks skip the plan/implement flow and, when they
     /// carry a PR URL, base their worktree on the PR's branch.
+    ///
+    /// Also read by `DerivedSection::for_task` to mean "this task reviews
+    /// someone else's PR", which is what makes a review decision on it the
+    /// user's own. A tag added here that routes to the review agent but
+    /// authors its own PR would mislabel both by-me sections.
     pub fn is_review(&self) -> bool {
         matches!(self, TaskTag::PrReview | TaskTag::Dependabot)
     }

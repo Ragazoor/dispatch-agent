@@ -84,13 +84,16 @@ enum SubStatus {
                       -- changes requested on the user's own PR, and changes the
                       -- user requested on someone else's. The UI separates the
                       -- two — see "Derived review sections" below.
-    approved          -- PR approved, ready to merge
+    approved          -- PR approved. Covers both directions: the user's own PR
+                      -- approved and ready to merge, and a PR the user approved
+                      -- on someone else's behalf. The UI separates the two —
+                      -- see "Derived review sections" below.
     pr_closed         -- GitHub closed the PR without merging; task stays in review so a human can act
 }
 
 -- == Derived review sections ==
 --
--- The Review column renders two section headers that are NOT SubStatus values.
+-- The Review column renders three section headers that are NOT SubStatus values.
 -- They are derived from the task row at render time, never persisted:
 --
 --   "parked"                  status = review and worktree != null and
@@ -111,11 +114,20 @@ enum SubStatus {
 --                             requested BY the user and the ball is with the
 --                             other author.
 --
--- Both are derived rather than stored so they self-correct: a parked task leaves
--- the parked section the moment its tmux window reappears, with nothing to write
--- back. Detach state alone does NOT create a section — a detached task that has
--- a PR renders under plain "awaiting review", because once a PR exists only the
--- review decision matters.
+--   "approved by me"          sub_status = approved and
+--                             tag in {pr_review, dependabot}
+--
+--                             The same tags, the same direction: the user
+--                             approved someone else's PR. Unlike an approval on
+--                             the user's own PR there is no merge to perform, so
+--                             nothing at all is waiting on the user — this is the
+--                             least actionable section in the column.
+--
+-- All three are derived rather than stored so they self-correct: a parked task
+-- leaves the parked section the moment its tmux window reappears, with nothing
+-- to write back. Detach state alone does NOT create a section — a detached task
+-- that has a PR renders under plain "awaiting review", because once a PR exists
+-- only the review decision matters.
 --
 -- Implemented as DerivedSection alongside VisualColumn, on the same priority
 -- scale as SubStatus.column_priority.
@@ -894,7 +906,7 @@ config {
 --       7 | Done             | done          | none
 --
 -- Review-column section order (within nav column 3, top to bottom). Sections are
--- ordered by how much they need the user, most first. Two are derived rather
+-- ordered by how much they need the user, most first. Three are derived rather
 -- than stored — see "Derived review sections" under SubStatus above:
 --
 --   # | Section                            | Means
@@ -902,13 +914,17 @@ config {
 --   1 | conflict                           | rebase/merge conflict — blocked
 --   2 | pr closed                          | closed without merging — decide
 --   3 | changes requested                  | on the user's own PR — must fix
---   4 | approved                           | ready to merge — one keystroke
+--   4 | approved                           | own PR, ready to merge
 --   5 | awaiting review                    | nothing to do yet
 --   6 | parked                   (derived) | no PR, agent session ended
 --   7 | changes requested by me  (derived) | waiting on the other author
+--   8 | approved by me           (derived) | nothing left for the user to do
 --
 -- "approved" deliberately sorts ABOVE "awaiting review": an approved PR is
--- actionable, an undecided one is not.
+-- actionable, an undecided one is not. "approved by me" sorts BELOW every other
+-- section for the mirror-image reason: the user already gave the only decision
+-- that was theirs to give, so the task needs them less than anything else in the
+-- column.
 --
 -- Navigation column layout (h/l cursor, left to right):
 --

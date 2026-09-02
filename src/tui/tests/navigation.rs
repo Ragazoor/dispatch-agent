@@ -1695,40 +1695,69 @@ fn parked_and_awaiting_review_tasks_get_separate_sections() {
     );
 }
 
-/// Changes I requested on someone else's PR are a different section from changes
-/// requested on mine, and they sort below every section that needs my attention.
+/// A review decision *I* made on someone else's PR is a different section from
+/// the same decision made on mine, and both sort below the sections that still
+/// need me. Reads the rendered section order straight off the buffer rather than
+/// searching for one label at a time: "changes requested" and "approved" are
+/// prefixes of their own by-me labels, so a first-substring-match assertion
+/// passes for the wrong reason when the order is broken.
 #[test]
-fn changes_requested_by_me_is_a_separate_section_below_my_own() {
-    let pr_url = |n: i64| {
-        Some(crate::models::TaskUrl::new(
-            format!("https://github.com/org/repo/pull/{n}"),
+fn review_decisions_i_made_render_as_their_own_sections_at_the_bottom() {
+    let review_task = |id: i64, sub_status: SubStatus, tag: crate::models::TaskTag| {
+        let mut t = make_task(id, TaskStatus::Review);
+        t.sub_status = sub_status;
+        t.tag = Some(tag);
+        t.url = Some(crate::models::TaskUrl::new(
+            format!("https://github.com/org/repo/pull/{id}"),
             crate::models::UrlType::Pr,
-        ))
+        ));
+        t
     };
 
-    // Someone requested changes on my PR — I must fix it.
-    let mut mine = make_task(1, TaskStatus::Review);
-    mine.sub_status = SubStatus::ChangesRequested;
-    mine.tag = Some(crate::models::TaskTag::Feature);
-    mine.url = pr_url(10);
+    let tasks = vec![
+        // On my own PRs — I must fix, then I can merge.
+        review_task(
+            1,
+            SubStatus::ChangesRequested,
+            crate::models::TaskTag::Feature,
+        ),
+        review_task(2, SubStatus::Approved, crate::models::TaskTag::Feature),
+        // On someone else's — the ball is with them, or nowhere at all.
+        review_task(
+            3,
+            SubStatus::ChangesRequested,
+            crate::models::TaskTag::PrReview,
+        ),
+        review_task(4, SubStatus::Approved, crate::models::TaskTag::PrReview),
+    ];
 
-    // I requested changes on someone else's PR — waiting on them.
-    let mut theirs = make_task(2, TaskStatus::Review);
-    theirs.sub_status = SubStatus::ChangesRequested;
-    theirs.tag = Some(crate::models::TaskTag::PrReview);
-    theirs.url = pr_url(11);
+    let mut app = App::new(tasks);
+    let buf = render_to_buffer(&mut app, 120, 24);
 
-    let mut app = App::new(vec![mine, theirs]);
-    let buf = render_to_buffer(&mut app, 120, 20);
-    let mine_row = buffer_find_row(&buf, "changes requested");
-    let theirs_row = buffer_find_row(&buf, "changes requested by me");
-    assert!(
-        mine_row.is_some() && theirs_row.is_some(),
-        "both sections should render; got {mine_row:?} and {theirs_row:?}"
-    );
-    assert!(
-        mine_row < theirs_row,
-        "'changes requested' should render above 'changes requested by me'"
+    // Longest label first so "approved by me" never reads as "approved".
+    let labels = [
+        "changes requested by me",
+        "approved by me",
+        "changes requested",
+        "approved",
+    ];
+    let area = buf.area();
+    let rendered: Vec<&str> = (area.top()..area.bottom())
+        .filter_map(|y| {
+            let line = buffer_line(&buf, y);
+            labels.into_iter().find(|l| line.contains(l))
+        })
+        .collect();
+
+    assert_eq!(
+        rendered,
+        vec![
+            "changes requested",
+            "approved",
+            "changes requested by me",
+            "approved by me",
+        ],
+        "unexpected Review section order"
     );
 }
 
