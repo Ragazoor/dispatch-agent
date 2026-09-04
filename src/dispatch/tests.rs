@@ -438,14 +438,39 @@ fn toggle_kills_the_tree_pane_even_when_the_tree_pane_is_active() {
     assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%2"]);
 }
 
-/// An editor pane makes two panes inactive, which the old heuristic read as
-/// "hidden" — so the toggle split a *second* companion pane instead of killing
-/// the one already there. Both panes are dispatch's now, so what keeps them
-/// apart is the marker's *value*: presence-matching here would kill the editor.
+/// Hiding takes the diff pane with the tree. A diff pane outliving its tree is
+/// orphaned: nothing drives its open set, nothing refreshes it, and this toggle
+/// does not act on it — see KillAgentTreeDiffPaneWithItsTree in
+/// docs/specs/agent-tree.allium.
 #[test]
-fn toggle_with_an_editor_pane_open_kills_only_the_tree_pane() {
+fn toggle_with_a_diff_pane_open_kills_both_panes() {
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%3 editor\n"),
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%3 diff\n"),
+        MockProcessRunner::ok(), // kill-pane: the diff pane
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
+        MockProcessRunner::ok(), // kill-pane: the tree
+    ])
+    .with_windows(&["task-42"]);
+
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    let killed: Vec<&str> = calls
+        .iter()
+        .filter(|(_, args)| args[0] == "kill-pane")
+        .map(|(_, args)| args[2].as_str())
+        .collect();
+    // The diff pane first, so it cannot briefly outlive its tree.
+    assert_eq!(killed, vec!["%3", "%2"]);
+}
+
+/// The agent's own pane carries no role, so it is never touched however many
+/// panes dispatch has put beside it. Presence-matching rather than
+/// value-matching would have killed it here.
+#[test]
+fn toggle_never_kills_a_pane_dispatch_did_not_create() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
         MockProcessRunner::ok(), // kill-pane
     ])
     .with_windows(&["task-42"]);
@@ -453,12 +478,27 @@ fn toggle_with_an_editor_pane_open_kills_only_the_tree_pane() {
     toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
 
     let calls = mock.recorded_calls();
-    assert_eq!(
-        calls.len(),
-        2,
-        "expected exactly a lookup and a kill; calls: {calls:?}"
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"%1".to_string())),
+        "the agent's own pane must be untouched; calls: {calls:?}"
     );
-    assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%2"]);
+}
+
+/// With nothing open there is no set to clear, so the toggle must not pay a
+/// `show-options` round-trip resolving the worktree. This is the common case.
+#[test]
+fn toggle_with_no_diff_pane_costs_only_a_lookup_and_a_kill() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
+        MockProcessRunner::ok(), // kill-pane
+    ])
+    .with_windows(&["task-42"]);
+
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
+
+    assert_eq!(mock.recorded_calls().len(), 2);
 }
 
 /// A pane dispatch did not create carries no role, whatever it is running — so

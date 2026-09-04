@@ -4,7 +4,7 @@
 pub const DEFAULT_PORT: u16 = 3142;
 
 pub mod agent_tree;
-pub mod agent_tree_editor;
+pub mod agent_tree_diff_pane;
 pub mod agent_tree_open_set;
 pub(crate) mod claude_paths;
 pub mod cli;

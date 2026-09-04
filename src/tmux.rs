@@ -691,26 +691,29 @@ pub fn split_window_horizontal_running(
     run_checked_stdout(runner, &args, "split-window")
 }
 
-/// Create a pane spanning the **full window width** below `target`, taking
-/// `size_pct`% of the window's height, running `command` as separate argv
+/// Create a pane **below `target`, inside `target`'s own column**, taking
+/// `size_pct`% of that column's height, running `command` as separate argv
 /// elements (no shell) with `cwd` as its start directory. Keeps focus where it
 /// is. Returns the new pane's ID.
 ///
 /// The third split helper in this module, and each difference is load-bearing.
 /// [`split_window_horizontal`] (40%, right, no command) serves the board's
 /// split-pane feature; [`split_window_horizontal_running`] (left, `size_pct`,
-/// command) opens the agent-tree companion pane. This one opens the editor pane
+/// command) opens the agent-tree companion pane. This one opens the DIFF pane
 /// *from* that companion pane, where:
 ///
-/// * `-f` makes the new pane span the window rather than subdividing the pane it
-///   was split from — the companion pane is the natural target and it is the
-///   narrow one, so without `-f` the editor would inherit its 30% column.
+/// * There is deliberately **no `-f`**. The new pane subdivides the companion
+///   pane's narrow column rather than spanning the window, so the agent's own
+///   pane keeps every column it had and opening a diff never takes room from
+///   the thing the user is supervising. The editor pane this replaced did span
+///   the window, and that is the one geometric difference between them — see
+///   `SplitAgentTreeDiffPane` in docs/specs/agent-tree.allium.
 /// * `-c` is passed explicitly rather than relying on [`ensure_split_hook`]'s
 ///   `@dispatch_dir` `cd`: that hook *types* `cd <dir>` into the new pane, which
-///   works for a shell and would land in the editor's own input here.
-/// * Focus stays put (`-d`) so the user can keep browsing the tree — see
-///   `OpenAgentTreeFileInEditor` in docs/specs/agent-tree.allium.
-pub fn split_window_full_below_running(
+///   works for a shell and would land in the diff renderer's own input here.
+/// * Focus stays put (`-d`) so the user can keep browsing the tree; reaching
+///   the diff to scroll it is tmux's own pane navigation.
+pub fn split_window_below_running(
     target: &str,
     size_pct: u8,
     cwd: &str,
@@ -718,14 +721,13 @@ pub fn split_window_full_below_running(
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
     if command.is_empty() {
-        bail!("split_window_full_below_running: command must not be empty");
+        bail!("split_window_below_running: command must not be empty");
     }
     let target_pane = window_target(target, runner)?;
     let size_arg = format!("{size_pct}%");
     let mut args: Vec<&str> = vec![
         "split-window",
         "-v",
-        "-f",
         "-d",
         "-l",
         &size_arg,
@@ -766,12 +768,12 @@ pub fn respawn_pane_running(
 
 /// Pane option marking a pane **dispatch itself created** in an agent window,
 /// valued with what that pane is for: [`PANE_ROLE_AGENT_TREE`] or
-/// [`PANE_ROLE_EDITOR`].
+/// [`PANE_ROLE_DIFF`].
 ///
 /// Lives here rather than with either creator because unrelated modules must
 /// agree on it forever: `dispatch::agents` writes the tree role and reads it back
-/// to toggle and resync that pane, `agent_tree_editor` writes and reads the
-/// editor role to reuse its pane, and `dispatch::companion_pane_ids` reads the
+/// to toggle and resync that pane, `agent_tree_diff_pane` writes and reads the
+/// diff role to split and kill its pane, and `dispatch::companion_pane_ids` reads the
 /// option's mere *presence* to drain every dispatch-created pane when an agent
 /// window is pinned into the board. The *policy* (when to split, when to replace)
 /// stays with each creator; the vocabulary is shared infrastructure.
@@ -786,8 +788,9 @@ pub const PANE_ROLE_OPTION: &str = "@dispatch_pane_role";
 /// [`PANE_ROLE_OPTION`] value for the `dispatch agent-tree` companion pane.
 pub const PANE_ROLE_AGENT_TREE: &str = "agent_tree";
 
-/// [`PANE_ROLE_OPTION`] value for the editor pane opened from that companion pane.
-pub const PANE_ROLE_EDITOR: &str = "editor";
+/// [`PANE_ROLE_OPTION`] value for the `dispatch agent-diff` pane opened from
+/// that companion pane.
+pub const PANE_ROLE_DIFF: &str = "diff";
 
 /// Set a pane-scoped tmux user option (`@name`). The pane-level sibling of
 /// [`set_window_dispatch_dir`]'s `set-option -w`.
@@ -1016,8 +1019,39 @@ pub fn pane_ids_with_option_value(
     )
 }
 
+/// Every dispatch-created pane in `target`'s window, paired with the role it was
+/// marked with.
+///
+/// The two lookups above each answer one question and cost one `list-panes`
+/// call. A caller that needs to act on more than one role at once — the toggle,
+/// which hides the tree and takes the diff pane with it — would otherwise pay a
+/// round-trip per role and, worse, read the window at two different moments.
+/// This asks once and answers both.
+///
+/// Panes with the option unset are excluded, exactly as in
+/// [`pane_ids_with_option`]: an unmarked pane is the agent's own.
+pub fn pane_roles(
+    target: &str,
+    option: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<(String, String)>> {
+    let resolved = window_target(target, runner)?;
+    let format = format!("#{{pane_id}} {}", option_format(option));
+    let out = run_checked_stdout(
+        runner,
+        &["list-panes", "-t", &resolved, "-F", &format],
+        "list-panes",
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(split_pane_row)
+        .filter(|(_, role)| !role.is_empty())
+        .map(|(id, role)| (id.to_string(), role.to_string()))
+        .collect())
+}
+
 /// The tmux format expression that expands to user option `option`'s value.
-/// Stated once so the two lookups above cannot spell it differently.
+/// Stated once so the three lookups above cannot spell it differently.
 fn option_format(option: &str) -> String {
     format!("#{{{option}}}")
 }
@@ -2058,7 +2092,7 @@ mod tests {
     #[test]
     fn pane_ids_with_option_returns_every_role() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"%1 \n%2 agent_tree\n%3 editor\n",
+            b"%1 \n%2 agent_tree\n%3 diff\n",
         )]);
         let found = pane_ids_with_option("%1", PANE_ROLE_OPTION, &mock).unwrap();
         assert_eq!(found, vec!["%2".to_string(), "%3".to_string()]);
@@ -2083,10 +2117,10 @@ mod tests {
     #[test]
     fn pane_ids_with_option_value_returns_only_that_role() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"%1 \n%2 agent_tree\n%3 editor\n",
+            b"%1 \n%2 agent_tree\n%3 diff\n",
         )]);
         let found =
-            pane_ids_with_option_value("%2", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock).unwrap();
+            pane_ids_with_option_value("%2", PANE_ROLE_OPTION, PANE_ROLE_DIFF, &mock).unwrap();
         assert_eq!(found, vec!["%3".to_string()]);
         assert_eq!(
             mock.recorded_calls()[0].1,
@@ -2100,15 +2134,15 @@ mod tests {
         );
     }
 
-    /// The whole value, not a prefix of it: a future role named `editor_split`
-    /// must not answer a lookup for `editor`.
+    /// The whole value, not a prefix of it: a future role named `diff_split`
+    /// must not answer a lookup for `diff`.
     #[test]
     fn pane_ids_with_option_value_matches_the_whole_value() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"%1 editor_split\n%2 editor\n",
+            b"%1 diff_split\n%2 diff\n",
         )]);
         let found =
-            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock).unwrap();
+            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_DIFF, &mock).unwrap();
         assert_eq!(found, vec!["%2".to_string()]);
     }
 
@@ -2118,7 +2152,7 @@ mod tests {
             b"%1 \n%2 agent_tree\n",
         )]);
         assert!(
-            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock)
+            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_DIFF, &mock)
                 .unwrap()
                 .is_empty()
         );
@@ -2133,12 +2167,12 @@ mod tests {
         );
     }
 
-    // --- split_window_full_below_running ---
+    // --- split_window_below_running ---
 
     #[test]
-    fn split_window_full_below_running_issues_correct_args() {
+    fn split_window_below_running_issues_correct_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")]);
-        let pane_id = split_window_full_below_running(
+        let pane_id = split_window_below_running(
             "%3",
             60,
             "/work/wt",
@@ -2155,7 +2189,6 @@ mod tests {
             vec![
                 "split-window",
                 "-v",
-                "-f",
                 "-d",
                 "-l",
                 "60%",
@@ -2173,23 +2206,28 @@ mod tests {
         );
     }
 
-    /// `-f` (span the window) is what makes the geometry independent of which
-    /// pane is targeted, and `-d` is what keeps focus in the tree pane. Both are
-    /// single-character flags, easy to drop in a refactor and invisible in the
-    /// result, so they are asserted by name as well as by the argv above.
+    /// The ABSENCE of `-f` is what keeps the new pane inside the target's own
+    /// column, so the agent's pane is untouched by opening a diff; `-d` is what
+    /// keeps focus in the tree. Both are single-character flags, easy to add or
+    /// drop in a refactor and invisible in the result, so both are asserted by
+    /// name as well as by the argv above.
     #[test]
-    fn split_window_full_below_running_spans_the_window_and_keeps_focus() {
+    fn split_window_below_running_subdivides_its_target_and_keeps_focus() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")]);
-        split_window_full_below_running("%3", 60, "/work/wt", &["vi", "a"], &mock).unwrap();
+        split_window_below_running("%3", 66, "/work/wt", &["dispatch", "agent-diff"], &mock)
+            .unwrap();
         let args = &mock.recorded_calls()[0].1;
-        assert!(args.contains(&"-f".to_string()), "args: {args:?}");
+        assert!(
+            !args.contains(&"-f".to_string()),
+            "-f would span the window and steal the agent's columns; args: {args:?}"
+        );
         assert!(args.contains(&"-d".to_string()), "args: {args:?}");
     }
 
     #[test]
-    fn split_window_full_below_running_keeps_argv_elements_separate() {
+    fn split_window_below_running_keeps_argv_elements_separate() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")]);
-        split_window_full_below_running(
+        split_window_below_running(
             "%3",
             60,
             "/work/wt",
@@ -2205,16 +2243,16 @@ mod tests {
     }
 
     #[test]
-    fn split_window_full_below_running_rejects_empty_command() {
+    fn split_window_below_running_rejects_empty_command() {
         let mock = MockProcessRunner::new(vec![]);
-        let err = split_window_full_below_running("%3", 60, "/w", &[], &mock).unwrap_err();
+        let err = split_window_below_running("%3", 60, "/w", &[], &mock).unwrap_err();
         assert!(err.to_string().contains("command must not be empty"));
     }
 
     #[test]
-    fn split_window_full_below_running_fails_on_nonzero_exit() {
+    fn split_window_below_running_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no space")]);
-        let err = split_window_full_below_running("%3", 60, "/w", &["vi", "a"], &mock).unwrap_err();
+        let err = split_window_below_running("%3", 60, "/w", &["vi", "a"], &mock).unwrap_err();
         assert!(
             err.to_string().contains("split-window failed"),
             "got: {err}"
@@ -2224,10 +2262,10 @@ mod tests {
     /// A window *name* target must be resolved rather than handed to tmux, which
     /// prefix-matches names (see [`window_target`]).
     #[test]
-    fn split_window_full_below_running_resolves_a_window_name() {
+    fn split_window_below_running_resolves_a_window_name() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")])
             .with_windows(&["task-42"]);
-        split_window_full_below_running("task-42", 60, "/w", &["vi", "a"], &mock).unwrap();
+        split_window_below_running("task-42", 60, "/w", &["vi", "a"], &mock).unwrap();
         let args = &mock.recorded_calls()[0].1;
         let target = args.iter().position(|a| a == "-t").unwrap() + 1;
         assert_eq!(args[target], mock.pane_id_of("task-42"));
@@ -2280,7 +2318,7 @@ mod tests {
     #[test]
     fn set_pane_option_issues_correct_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
-        set_pane_option("%7", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock).unwrap();
+        set_pane_option("%7", PANE_ROLE_OPTION, PANE_ROLE_DIFF, &mock).unwrap();
         assert_eq!(
             mock.recorded_calls()[0].1,
             vec![
@@ -2289,7 +2327,7 @@ mod tests {
                 "-t",
                 "%7",
                 "@dispatch_pane_role",
-                "editor"
+                "diff"
             ]
         );
     }

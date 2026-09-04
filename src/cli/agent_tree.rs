@@ -835,10 +835,96 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
     KeyAction::Continue
 }
 
+/// What the loop needs to keep the diff pane in step with the open set: which
+/// database and task the pane below should read, and the worktree it starts in.
+///
+/// Bundled rather than passed as four more arguments because they travel
+/// together and none of them means anything without the others.
+pub(crate) struct DiffPaneContext<'a> {
+    pub db_path: &'a Path,
+    pub task_id: i64,
+}
+
+/// Publish the open set and make the panes agree with it.
+///
+/// Both halves are best-effort and both report through the pane's own notice,
+/// because both are the direct answer to a keypress the user just made. The
+/// renderer keeps running either way: a diff pane that will not open must not
+/// take the tree with it (docs/specs/agent-tree.allium:
+/// `AgentTreeDiffPaneFailureIsVisible`).
+///
+/// The open set is left ALONE by a failure here. The user asked for a file to
+/// be open and it is open; what failed is showing it, and the next toggle
+/// retries rather than making them re-open everything.
+fn publish_open_set(
+    root: &Path,
+    context: &DiffPaneContext<'_>,
+    state: &mut RenderState,
+    runner: &dyn ProcessRunner,
+) {
+    let root_str = root.to_string_lossy().into_owned();
+    if let Err(e) = crate::agent_tree_open_set::write_open_set(&root_str, &state.open_diffs) {
+        tracing::warn!(root = %root.display(), error = %format!("{e:#}"), "failed to record the open set");
+        state.notice = Some(Notice::diff(format!("{e:#}")));
+        return;
+    }
+
+    let my_pane = match crate::agent_tree_diff_pane::current_pane_from_env() {
+        Ok(pane) => pane,
+        Err(e) => {
+            state.notice = Some(Notice::diff(e.to_string()));
+            return;
+        }
+    };
+
+    if let Err(e) = crate::agent_tree_diff_pane::reconcile_diff_pane(
+        &my_pane,
+        context.db_path,
+        context.task_id,
+        root,
+        !state.open_diffs.is_empty(),
+        runner,
+    ) {
+        tracing::warn!(error = %format!("{e:#}"), "failed to reconcile the diff pane");
+        state.notice = Some(Notice::diff(format!("{e:#}")));
+    }
+}
+
+/// Leave nothing behind: empty the open set and take the diff pane with the
+/// tree.
+///
+/// A diff pane outliving its tree is orphaned — nothing drives its open set,
+/// nothing refreshes it, and the toggle that would bring the tree back does not
+/// act on it. See `KillAgentTreeDiffPaneWithItsTree` in
+/// docs/specs/agent-tree.allium.
+///
+/// Every failure is logged and swallowed: this runs while the renderer is
+/// already leaving, so there is nowhere left to show a notice.
+fn tear_down_diff_pane(root: &Path, context: &DiffPaneContext<'_>, runner: &dyn ProcessRunner) {
+    let root_str = root.to_string_lossy().into_owned();
+    if let Err(e) = crate::agent_tree_open_set::clear_open_set(&root_str) {
+        tracing::warn!(error = %format!("{e:#}"), "failed to clear the open set on exit");
+    }
+    let Ok(my_pane) = crate::agent_tree_diff_pane::current_pane_from_env() else {
+        return;
+    };
+    if let Err(e) = crate::agent_tree_diff_pane::reconcile_diff_pane(
+        &my_pane,
+        context.db_path,
+        context.task_id,
+        root,
+        false,
+        runner,
+    ) {
+        tracing::warn!(error = %format!("{e:#}"), "failed to close the diff pane on exit");
+    }
+}
+
 fn run_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     root: &Path,
     base_branch: &str,
+    context: &DiffPaneContext<'_>,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
     let mut state = RenderState::new();
@@ -866,9 +952,14 @@ fn run_loop<B: Backend>(
                 continue;
             }
             match handle_key(&mut state, &tree, key) {
-                KeyAction::Exit => return Ok(()),
+                KeyAction::Exit => {
+                    tear_down_diff_pane(root, context, runner);
+                    return Ok(());
+                }
                 KeyAction::Continue => {}
-                KeyAction::DiffSetChanged => {}
+                KeyAction::DiffSetChanged => {
+                    publish_open_set(root, context, &mut state, runner);
+                }
             }
             continue;
         }
@@ -948,10 +1039,16 @@ pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Start from a clean slate. The open set is view state, like the cursor and
+    // the manual expansions, and a set left behind by a killed renderer
+    // describes nothing — see the AgentTreeCompanionPane surface's guidance.
+    let _ = crate::agent_tree_open_set::clear_open_set(&root.to_string_lossy());
+
     let result = run_loop(
         &mut terminal,
         &root,
         &base_branch,
+        &DiffPaneContext { db_path, task_id },
         &RealProcessRunner::default(),
     );
 

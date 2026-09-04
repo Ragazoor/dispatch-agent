@@ -199,12 +199,58 @@ pub fn toggle_agent_tree_pane(window: &TmuxWindow, runner: &dyn ProcessRunner) -
     let Some(task_id) = window.task_id() else {
         return Ok(());
     };
-    match agent_tree_pane_id(window, runner)? {
-        Some(pane_id) => tmux::kill_pane(&pane_id, runner),
-        None => {
-            let worktree = window_worktree(window, runner);
-            spawn_agent_tree_pane(window, task_id, worktree.as_deref(), runner);
-            Ok(())
+
+    // One lookup, both roles. Asking per role would pay a round-trip each and,
+    // worse, read the window at two different moments — the tree could be gone
+    // by the time the diff pane was looked for.
+    let roles = tmux::pane_roles(window.as_str(), tmux::PANE_ROLE_OPTION, runner)?;
+    let tree_pane = roles
+        .iter()
+        .find(|(_, role)| role == tmux::PANE_ROLE_AGENT_TREE);
+
+    let Some((tree_pane, _)) = tree_pane else {
+        let worktree = window_worktree(window, runner);
+        spawn_agent_tree_pane(window, task_id, worktree.as_deref(), runner);
+        return Ok(());
+    };
+
+    // Hiding takes the diff pane with the tree, and the open set with both. A
+    // diff pane outliving its tree is orphaned: nothing drives its open set,
+    // nothing refreshes it, and this toggle does not act on it — see
+    // KillAgentTreeDiffPaneWithItsTree in docs/specs/agent-tree.allium.
+    discard_diff_panes(window, &roles, runner);
+    tmux::kill_pane(tree_pane, runner)
+}
+
+/// Kill every diff pane in `window` and forget what it was showing.
+///
+/// Best-effort throughout, like every other agent-tree pane operation: the tree
+/// is going either way, and a diff pane that could not be killed is a stray
+/// pane rather than a broken toggle. The open set is cleared too, so a renderer
+/// started later begins with a bare tree — view state does not survive a
+/// restart, exactly as the cursor and the manual expansions do not.
+fn discard_diff_panes(window: &TmuxWindow, roles: &[(String, String)], runner: &dyn ProcessRunner) {
+    let panes: Vec<&String> = roles
+        .iter()
+        .filter(|(_, role)| role == tmux::PANE_ROLE_DIFF)
+        .map(|(pane, _)| pane)
+        .collect();
+
+    // No diff pane means nothing was open, so there is no set to clear and no
+    // reason to pay a `show-options` round-trip resolving the worktree. This is
+    // the common case: most toggles happen with no diff open.
+    if panes.is_empty() {
+        return;
+    }
+
+    for pane in panes {
+        if let Err(e) = tmux::kill_pane(pane, runner) {
+            tracing::warn!(%window, %pane, error = %e, "failed to kill the diff pane with its tree");
+        }
+    }
+    if let Some(worktree) = window_worktree(window, runner) {
+        if let Err(e) = crate::agent_tree_open_set::clear_open_set(&worktree) {
+            tracing::warn!(%window, error = %format!("{e:#}"), "failed to clear the open set");
         }
     }
 }
