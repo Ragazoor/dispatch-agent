@@ -2120,6 +2120,18 @@ rule AppendOnlyFeed {
     -- is the reason the user-facing instruction for these epics is "archive",
     -- not "delete".
     --
+    -- ACCEPTED CONSEQUENCE: every later poll re-applies the item's title,
+    -- description, tag, labels and sort_order to that archived task and bumps
+    -- updated_at — forever, for as long as the source keeps emitting the id.
+    -- Only status and sub_status are preserved.
+    -- This is ordinary UpsertFeedTasks behaviour rather than anything new, but
+    -- an append-only epic is where it becomes permanent and visible, because
+    -- archived rows there accumulate instead of being deleted as stale. It is
+    -- accepted, not overlooked: the refresh is what keeps an OPEN card's
+    -- occurrence count current, the same clause cannot tell an archived row
+    -- from a running one, and column ordering is by sort_order rather than
+    -- updated_at (core/Task), so the churn reorders nothing a user sees.
+    --
     -- INTERACTION WITH THE DEGRADED-EMISSION RULES. The causes of additivity
     -- are independent and neither overrides the other; additive is their
     -- union. An append-only epic whose command also writes to stderr is
@@ -2138,6 +2150,26 @@ rule AppendOnlyFeed {
     -- name — for a log feed, potentially all of them. That is the honest
     -- consequence of the flag meaning what it says, and it is why the flag
     -- belongs to wiring an epic up rather than to a board keybinding.
+
+    -- NOT COMBINABLE WITH GROUPING OR A FEED ROLE. The grouped and
+    -- role-routed paths gate their MIGRATION steps — deleting the parent's
+    -- flat copies once the sub-epic copies stand alone — on the same
+    -- permission as their stale deletes, deferring them to "the next trusted
+    -- emission". For an epic that is additive by configuration that emission
+    -- never arrives, so the migration is deferred forever and the parent's
+    -- flat tasks and the sub-epic copies both persist, with no poll able to
+    -- converge them. That contradicts the from-any-starting-state convergence
+    -- the grouped and role-routed reconciles promise.
+    --
+    -- So an epic may be append-only OR grouped/role-routed, never both, and
+    -- the write path REFUSES the pair rather than accepting it and corrupting
+    -- later (epics.allium: UpdateEpicViaMcp). The refusal is deliberately the
+    -- conservative resolution: it makes the bad state unreachable without
+    -- deciding what re-homing an ACCUMULATED task should mean, which is a real
+    -- open question. Splitting the two permissions apart — "may I delete
+    -- because absent" versus "do I trust this emission enough to migrate" —
+    -- is the change that would lift the restriction, and it needs that
+    -- question answered first.
 
     requires: epic.feed_append_only and exit_status = 0
               and (items.count > 0 or stderr = "")
@@ -2170,11 +2202,16 @@ rule AppendOnlyFeed {
         -- train the user to ignore the line that matters. A cycle that is
         -- additive for BOTH reasons still reports the degradation.
         --
-        -- Coverage: src/feed/cycle.rs for the mode selection (append-only
-        -- alone, degraded alone, both together, and the clean mirroring
-        -- boundary); src/feed/ingest/tests.rs for the reconcile behaviour,
-        -- which reuses the existing additive_* assertions rather than
-        -- duplicating them.
+        -- Coverage: src/feed/cycle.rs for the three mode-selection cases this
+        -- rule adds — append-only alone, append-only alongside a degraded
+        -- emission, and the clean mirroring boundary that must keep removing.
+        -- Degraded-alone is NOT here; it belongs to DegradedNonEmptyEmission
+        -- and is covered where that rule's own guidance says it is.
+        -- src/feed/ingest/tests.rs covers the reconcile behaviour, reusing the
+        -- existing additive_* assertions rather than duplicating them, and
+        -- src/db/tests/tasks.rs covers the archive claim above
+        -- (upsert_feed_tasks_leaves_an_archived_task_archived_and_inserts_no_second_row,
+        -- which pins the delete asymmetry in the same test).
 }
 
 

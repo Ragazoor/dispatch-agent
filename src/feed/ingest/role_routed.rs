@@ -241,9 +241,12 @@ pub(super) async fn run_role_routed_feed_sync(
 
     // Phase 2 runs in both modes — inserts, field refreshes and the moves
     // already applied above all follow from what the emission CONTAINS. Phases
-    // 3 and 4 are the two removal mechanisms and are skipped wholesale when the
-    // emission's omissions are not trusted (feeds.allium:
-    // DegradedNonEmptyEmission).
+    // 3 and 4 are the two removal mechanisms and are skipped wholesale whenever
+    // the sync may not act on omissions — an untrusted emission, or an epic that
+    // never mirrors (feeds.allium: DegradedNonEmptyEmission, AppendOnlyFeed).
+    // The latter cannot reach a reviews_parent epic: the service refuses
+    // feed_append_only on an epic carrying a feed role, precisely because
+    // phase 4 below is a migration that would then never run.
     let mut removed = upsert_role_groups(db, parent_id, routed.groups, mode).await;
     if mode.removes_absent() {
         removed.extend(delete_stale_subtree(db, parent_id, &roles, &routed.all_external_ids).await);

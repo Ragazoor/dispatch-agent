@@ -342,6 +342,46 @@ impl EpicService {
         let epic_id = params.epic_id;
         let existing = self.db.get_epic(epic_id).await?;
 
+        // Append-only is PERMANENT additivity, and the grouped and role-routed
+        // paths gate their MIGRATION steps on the same removal permission as
+        // their stale deletes. Those steps defer to "the next trusted
+        // emission" — which, for an epic that is additive by configuration,
+        // never arrives. The parent's flat copies and the sub-epic copies
+        // would then both persist forever, with no poll able to heal the
+        // duplicate state the grouped design promises to converge out of.
+        //
+        // Refusing the combination is deliberately the conservative fix: it
+        // makes the corrupting state unreachable without deciding what
+        // re-homing an ACCUMULATED task should mean, which is a real design
+        // question and not one to settle in a guard. Relaxing this later needs
+        // that answer first. See feeds.allium: AppendOnlyFeed.
+        //
+        // Evaluated against the POST-update values, so the pair is refused
+        // whichever flag arrives second and whether they arrive together or
+        // apart. feed_role is not settable here, so it is read as-is.
+        let appends_only = params
+            .feed_append_only
+            .or_else(|| existing.as_ref().map(|e| e.feed_append_only))
+            .unwrap_or(false);
+        if appends_only {
+            let grouped = params
+                .group_by_repo
+                .or_else(|| existing.as_ref().map(|e| e.group_by_repo))
+                .unwrap_or(false);
+            let routed = existing
+                .as_ref()
+                .is_some_and(|e| e.feed_role != crate::models::FeedRole::None);
+            if grouped || routed {
+                return Err(ServiceError::Validation(
+                    "feed_append_only cannot be combined with group_by_repo or a feed role: \
+                     those paths only finish migrating tasks on a cycle that is allowed to \
+                     remove, which an append-only epic never has. Use a flat epic for an \
+                     append-only feed."
+                        .to_string(),
+                ));
+            }
+        }
+
         let mut patch = EpicPatch::new();
         if let Some(ref t) = params.title {
             patch = patch.title(t);
@@ -804,6 +844,103 @@ mod tests {
         .unwrap();
         let cleared = db.get_epic(epic.id).await.unwrap().unwrap();
         assert_eq!(cleared.feed_interval_secs, None);
+    }
+
+    /// feeds.allium AppendOnlyFeed: append-only is permanent additivity, and
+    /// the grouped and role-routed paths gate their MIGRATION steps
+    /// (clear_parent_flat_tasks, clear_parent_stranded_tasks) on the same
+    /// removal permission. Those steps defer to "the next trusted emission",
+    /// which for an append-only epic never comes — so the parent's flat copies
+    /// and the sub-epic copies would both persist, permanently, with no poll
+    /// able to heal it. Refuse the combination rather than ship the corruption.
+    #[tokio::test]
+    async fn update_epic_refuses_append_only_together_with_group_by_repo() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Log warnings", "", None).await.unwrap();
+        let svc = EpicService::new(db.clone());
+
+        svc.update_epic(UpdateEpicParams {
+            feed_append_only: Some(true),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+
+        // Turning grouping on afterwards must be refused...
+        let err = svc
+            .update_epic(UpdateEpicParams {
+                group_by_repo: Some(true),
+                ..base_params(epic.id)
+            })
+            .await;
+        assert!(
+            matches!(err, Err(ServiceError::Validation(_))),
+            "append-only + group_by_repo must be refused, got {err:?}"
+        );
+        let unchanged = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(
+            !unchanged.group_by_repo,
+            "a refused update must write nothing"
+        );
+
+        // ...and so must the same pair arriving in the other order.
+        let grouped = db.create_epic("Grouped", "", None).await.unwrap();
+        svc.update_epic(UpdateEpicParams {
+            group_by_repo: Some(true),
+            ..base_params(grouped.id)
+        })
+        .await
+        .unwrap();
+        let reversed = svc
+            .update_epic(UpdateEpicParams {
+                feed_append_only: Some(true),
+                ..base_params(grouped.id)
+            })
+            .await;
+        assert!(
+            matches!(reversed, Err(ServiceError::Validation(_))),
+            "the same pair in the other order must be refused too, got {reversed:?}"
+        );
+
+        // Both flags in ONE call is the same refusal, not a way around it.
+        let both = db.create_epic("Both at once", "", None).await.unwrap();
+        let together = svc
+            .update_epic(UpdateEpicParams {
+                group_by_repo: Some(true),
+                feed_append_only: Some(true),
+                ..base_params(both.id)
+            })
+            .await;
+        assert!(
+            matches!(together, Err(ServiceError::Validation(_))),
+            "setting both in one call is the same refusal, not a way around it, got {together:?}"
+        );
+    }
+
+    /// The boundary: each flag alone is fine, and turning append-only OFF on a
+    /// grouped epic must not be caught by the guard.
+    #[tokio::test]
+    async fn update_epic_allows_either_flag_alone() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+
+        let grouped = db.create_epic("Grouped", "", None).await.unwrap();
+        svc.update_epic(UpdateEpicParams {
+            group_by_repo: Some(true),
+            feed_append_only: Some(false),
+            ..base_params(grouped.id)
+        })
+        .await
+        .unwrap();
+
+        let log = db.create_epic("Log warnings", "", None).await.unwrap();
+        // Append-only on an ungrouped epic is the shipped case.
+        svc.update_epic(UpdateEpicParams {
+            feed_append_only: Some(true),
+            ..base_params(log.id)
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

@@ -37,6 +37,12 @@ pub(crate) enum FeedCycleOutcome {
         /// wrote to stderr — it removed nothing, so a caller that presents this
         /// outcome must say so rather than let it read as a full reconcile.
         /// See feeds.allium: `DegradedNonEmptyEmission`.
+        ///
+        /// `None` does NOT mean the cycle reconciled. An append-only epic is
+        /// additive by configuration and reports no reason, deliberately: see
+        /// feeds.allium `AppendOnlyFeed` for why that case is not surfaced.
+        /// This field answers "was anything WRONG with this emission", not
+        /// "did this cycle remove".
         degraded: Option<String>,
     },
     /// A cycle for this epic was already in flight, so this request did nothing
@@ -49,9 +55,11 @@ pub(crate) enum FeedCycleOutcome {
 
 /// One feed cycle for one epic.
 ///
-/// `feed_command`, `feed_role` and `group_by_repo` are deliberately NOT fields:
-/// they are read from the epic inside [`run`](Self::run), after the claim, so
-/// neither caller can act on a stale snapshot of them.
+/// `feed_command`, `feed_role`, `group_by_repo` and `feed_append_only` are
+/// deliberately NOT fields: they are read from the epic inside
+/// [`run`](Self::run), after the claim, so neither caller can act on a stale
+/// snapshot of them. Anything else the cycle ACTS on belongs on that list, not
+/// in this struct.
 pub(crate) struct FeedCycle {
     pub(crate) db: Arc<dyn TaskStore>,
     pub(crate) runner: Arc<dyn ProcessRunner>,
@@ -507,18 +515,15 @@ mod tests {
     #[tokio::test]
     async fn an_append_only_epic_still_reports_a_degraded_emission() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
-        let epic = db.create_epic("Log warnings", "", None).await.unwrap();
+        let epic_id = flat_feed_epic(&db, TWO_RECORDS, true).await;
+        // Same epic, same emission — only the stderr differs, so this isolates
+        // the second cause rather than re-standing-up the first.
         let cmd = format!("echo '{TWO_RECORDS}'; echo 'scan window truncated' >&2");
-        db.patch_epic(
-            epic.id,
-            &EpicPatch::new()
-                .feed_command(Some(cmd.as_str()))
-                .feed_append_only(true),
-        )
-        .await
-        .unwrap();
+        db.patch_epic(epic_id, &EpicPatch::new().feed_command(Some(cmd.as_str())))
+            .await
+            .unwrap();
 
-        match cycle(db, epic.id).run().await {
+        match cycle(db, epic_id).run().await {
             FeedCycleOutcome::Synced { degraded, .. } => assert!(
                 degraded.is_some(),
                 "append-only does not suppress the degradation report; the command still failed part way"

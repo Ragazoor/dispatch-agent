@@ -31,9 +31,15 @@ use anyhow::Result;
 
 /// Whether a sync pass may act on what its emission OMITS.
 ///
-/// Decided once per feed cycle, from the degraded-emission predicates in
-/// [`crate::feed::exec`], and threaded unchanged through every sync path — no
-/// path re-decides it. See feeds.allium: `DegradedNonEmptyEmission`.
+/// Decided once per feed cycle and threaded unchanged through every sync path
+/// — no path re-decides it. TWO independent causes select [`Additive`], and
+/// this type deliberately does not record which: the degraded-emission
+/// predicates in [`crate::feed::exec`] (this EMISSION is not trusted), and an
+/// epic's `feed_append_only` flag (this EPIC never mirrors, because its source
+/// emits events that are never retracted). See feeds.allium:
+/// `DegradedNonEmptyEmission` and `AppendOnlyFeed`.
+///
+/// [`Additive`]: SyncMode::Additive
 ///
 /// An enum rather than a `bool` because both readings of a bare flag
 /// (`delete_absent` vs `additive`) are plausible at a call site, and picking the
@@ -43,9 +49,11 @@ pub(crate) enum SyncMode {
     /// The emission is trusted in full: absent feed tasks are stale and are
     /// deleted (and then torn down). The ordinary mode.
     Reconcile,
-    /// The emission is trusted only for what it contains. Inserts, field
-    /// refreshes and cross-role moves still happen; every removal is skipped,
-    /// so [`FeedSyncOutcome::removed`] comes back empty.
+    /// Act only on what the emission contains. Inserts, field refreshes and
+    /// cross-role moves still happen; every removal is skipped, so
+    /// [`FeedSyncOutcome::removed`] comes back empty. Reached either because
+    /// the emission is untrusted or because the epic never mirrors — see the
+    /// type's docs for why the difference is not recorded here.
     Additive,
 }
 

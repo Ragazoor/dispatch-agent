@@ -1451,6 +1451,80 @@ async fn upsert_feed_tasks_idempotent() {
     assert_eq!(tasks[0].title, "Task One");
 }
 
+/// The claim the whole "archive, never delete" instruction for an append-only
+/// feed rests on (feeds.allium: AppendOnlyFeed).
+///
+/// Archiving is the ONLY permanent suppression such a feed offers: dispatch
+/// keeps no separate record of an external_id it has retired, so the archived
+/// TASK is the record. If archiving dropped the row, moved the epic, or cleared
+/// the external_id, the next poll would insert the card again and the
+/// suppression would be a lie. Deleting the task really does bring it back —
+/// that asymmetry is asserted below too, because it is the reason the
+/// instruction says archive rather than delete.
+#[tokio::test]
+async fn upsert_feed_tasks_leaves_an_archived_task_archived_and_inserts_no_second_row() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("Log warnings", "", None).await.unwrap();
+    let items = vec![make_feed_item("log:WARN:mod:a warning", "warn A")];
+
+    db.upsert_feed_tasks(epic.id, &items, &["/repo".to_string()], &main_branches(1))
+        .await
+        .unwrap();
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    assert_eq!(tasks.len(), 1);
+    let archived_id = tasks[0].id;
+    db.patch_task(archived_id, &TaskPatch::new().status(TaskStatus::Archived))
+        .await
+        .unwrap();
+
+    // The record is still in the log, so the script emits it again — forever.
+    for _ in 0..3 {
+        db.upsert_feed_tasks(epic.id, &items, &["/repo".to_string()], &main_branches(1))
+            .await
+            .unwrap();
+    }
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    assert_eq!(
+        tasks.len(),
+        1,
+        "the archived row is the conflict target, so re-emission updates it rather than inserting beside it"
+    );
+    assert_eq!(
+        tasks[0].id, archived_id,
+        "it is the same row, not a replacement"
+    );
+    assert_eq!(
+        tasks[0].status,
+        TaskStatus::Archived,
+        "status preservation applies to archived exactly as it does to running: the card stays suppressed"
+    );
+
+    // The other half: deleting instead of archiving removes the conflict
+    // target, so the very next poll brings the card back.
+    db.delete_task(archived_id).await.unwrap();
+    db.upsert_feed_tasks(epic.id, &items, &["/repo".to_string()], &main_branches(1))
+        .await
+        .unwrap();
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    assert_eq!(
+        tasks.len(),
+        1,
+        "a deleted feed task is re-inserted by the next emission"
+    );
+    // Not asserted by id: SQLite reuses the rowid once the table is empty, so
+    // the fresh row can land on the id the deleted one had. What makes it a
+    // fresh row is that it carries the FEED's status again rather than the
+    // triage the user applied.
+    assert_ne!(
+        tasks[0].status,
+        TaskStatus::Archived,
+        "deleting is not suppression: the re-inserted row takes the feed's status, undoing the triage"
+    );
+}
+
 #[tokio::test]
 async fn upsert_feed_tasks_preserves_status() {
     let db = in_memory_db().await;

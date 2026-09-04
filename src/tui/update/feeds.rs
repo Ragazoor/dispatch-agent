@@ -9,9 +9,10 @@ impl App {
     pub(in crate::tui) fn handle_trigger_epic_feed(&mut self, id: EpicId) -> Vec<Command> {
         // The cached board answers only "is this a feed epic at all?" — this
         // rule's requires clause, for which stale data is fine. The values the
-        // cycle ACTS on (feed_command, feed_role, group_by_repo) are re-read
-        // from the epic inside FeedCycle::run, so a refresh can never run a
-        // command or a grouping mode the user has since changed.
+        // cycle ACTS on (feed_command, feed_role, group_by_repo,
+        // feed_append_only) are re-read from the epic inside FeedCycle::run, so
+        // a refresh can never run a command, a grouping mode or a removal
+        // policy the user has since changed.
         let title = self
             .find_epic(id)
             .filter(|e| e.feed_command.is_some())

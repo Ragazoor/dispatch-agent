@@ -236,11 +236,18 @@ pub(super) async fn sync_grouped_feed(
         upsert_present_groups(db, parent_id, groups, &active_sub_epics, mode).await;
 
     // Phases 3 and 4 are the grouped path's two removal mechanisms, so both are
-    // skipped when the emission's omissions are not trusted (feeds.allium:
+    // skipped when the sync may not act on omissions (feeds.allium:
     // DegradedNonEmptyEmission). That also defers grouping MIGRATION — which is
     // phase 4 in disguise, deleting flat parent tasks so the sub-epic copies
     // stand alone — to the next trusted emission, rather than half-performing
     // it against a degraded one.
+    //
+    // "The next trusted emission" is why an APPEND-ONLY epic may not be grouped
+    // and the service refuses the pair: append-only is additive permanently, so
+    // that next emission never comes and the migration would be deferred
+    // forever, leaving the parent's flat copies and the sub-epic copies both
+    // standing with no poll able to heal it. Only the degraded cause reaches
+    // this branch, and for it the deferral is exactly right.
     let absent_ids = if mode.removes_absent() {
         let (absent_ids, absent_removed) =
             clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await;

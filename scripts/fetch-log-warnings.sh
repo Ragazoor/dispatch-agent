@@ -92,8 +92,15 @@ fi
 # Pointing this at a different repo's logs means editing this awk block. The
 # format it parses is tracing's; the fingerprint recipe is policy, and policy
 # belongs in the script rather than in the dispatch runtime.
+# AGGREGATE IN AWK, NOT IN JQ. awk emits one row PER GROUP, not per line, so
+# everything downstream is proportional to the number of distinct records
+# rather than to the size of the log. That matters: handing jq one object per
+# matched line peaked at 1.6 GB of resident memory on a 335 MB log, because
+# 72% of the bytes were sample text for lines that were never quoted. This
+# shape holds flat at a few MB on the same input, and the full re-scan — which
+# is what makes archive-as-suppression work — is kept.
 grep -aE " ($LEVELS) " -- "$LOG_FILE" \
-| awk '
+| awk -v samples="$SAMPLES" '
 {
     gsub(/\t/, " ")
     level = $2
@@ -102,9 +109,8 @@ grep -aE " ($LEVELS) " -- "$LOG_FILE" \
 
     # The message is whatever follows "<target>: ".
     at = index($0, $3)
-    msg = substr($0, at + length($3) + 1)
+    head = substr($0, at + length($3) + 1)
 
-    head = msg
     sub(/:.*/, "", head)              # cut at the first colon
     sub(/ [a-z_]+=.*/, "", head)      # cut at the first structured field
     gsub(/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/, "R", head)
@@ -112,47 +118,71 @@ grep -aE " ($LEVELS) " -- "$LOG_FILE" \
     gsub(/^ +| +$/, "", head)
     if (head == "") head = "(no message)"
 
-    print level "\t" target "\t" head "\t" $1 "\t" substr($0, 1, 300)
+    key = level "\t" target "\t" head
+    if (!(key in count)) {
+        count[key] = 0
+        first[key] = $1
+        last[key] = $1
+    }
+    count[key]++
+
+    # ISO-8601 timestamps sort lexically, so a running min/max costs O(1) per
+    # line and assumes nothing about the order lines appear in the file.
+    if ($1 < first[key]) first[key] = $1
+    if ($1 > last[key])  last[key] = $1
+
+    # Truncation is paid only for the lines actually quoted, not for all of them.
+    # Samples are joined with US (0x1f), never a newline: the stream below is
+    # one line per group, so a newline here would split a group across rows.
+    if (count[key] <= samples) {
+        sample[key] = (count[key] == 1 ? "" : sample[key] "\037") "    " substr($0, 1, 300)
+    }
+}
+END {
+    for (key in count) {
+        print key "\t" count[key] "\t" first[key] "\t" last[key] "\t" sample[key]
+    }
 }' \
-| jq -Rs --arg repo_url "$REPO_URL" --argjson samples "$SAMPLES" '
+| jq -Rs --arg repo_url "$REPO_URL" '
     [ split("\n")[] | select(length > 0) | split("\t")
-      | {level: .[0], target: .[1], head: .[2], ts: .[3], line: .[4]} ]
-    | group_by(.level + " " + .target + " " + .head)
+      | {level: .[0], target: .[1], head: .[2],
+         count: (.[3] | tonumber), first: .[4], last: .[5], samples: .[6]} ]
+    # Rank by how often the record fired: sort_order is ascending, so the
+    # noisiest record gets rank 1 and lands at the top of the column.
+    | sort_by(-.count)
+    | to_entries
     | map(
-        (.[0]) as $f
-        | length as $count
-        | (map(.ts) | sort) as $times
+        .value as $f
         | ($f.target | split("::") | .[-2:] | join("::")) as $short
         | {
             external_id: "log:\($f.level):\($f.target):\($f.head)",
             title: "[\($f.level)] \($short): \($f.head)",
             description: (
-              "\($count) occurrence(s), first \($times[0]), last \($times[-1]).\n"
+              "\($f.count) occurrence(s), first \($f.first), last \($f.last).\n"
               + "\nModule: \($f.target)\nLevel:  \($f.level)\n"
               + "\nTriage this record. It is exactly one of three things.\n"
               + "\n1. A REAL BUG. Fix it.\n"
               + "\n2. A FALSE POSITIVE: the code is behaving correctly and the log\n"
               + "   line is what is wrong — it warns about something expected, or\n"
-              + "   its wording is ambiguous about which. Demote it to INFO/DEBUG,\n"
-              + "   or reword it so it is unambiguous. Run /weed first: if the spec\n"
-              + "   and the code disagree about this path, that disagreement is the\n"
-              + "   actual finding and the log line is only its symptom.\n"
+              + "   its wording is ambiguous about which. Run /weed first: if the\n"
+              + "   spec and the code disagree about this path, that disagreement\n"
+              + "   is the actual finding and the log line is only its symptom.\n"
+              + "   DEMOTING the line to INFO/DEBUG retires this card outright.\n"
+              + "   REWORDING it does not: the message head is this card'"'"'s\n"
+              + "   identity, so a reworded line arrives as a NEW card. That is\n"
+              + "   working as intended — archive this one, then confirm and\n"
+              + "   archive its replacement once.\n"
               + "\n3. REAL BUT TRANSIENT — upstream flakiness that is worth keeping\n"
               + "   at this level. ARCHIVE this card. Archiving is permanent: the\n"
               + "   feed will never recreate it. Do NOT delete it; a deleted card\n"
               + "   comes back on the next poll.\n"
               + "\nSample lines:\n"
-              + (map("    " + .line) | .[0:$samples] | join("\n"))
+              + ($f.samples | split("\u001f") | join("\n"))
             ),
             url: $repo_url,
             status: "backlog",
             tag: "bug",
             labels: [($f.level | ascii_downcase)],
-            _count: $count
+            sort_order: (.key + 1)
           })
-    # Rank by how often the record fired, noisiest first: sort_order is
-    # ascending, so the rank is 1-based rather than a negative count.
-    | sort_by(-._count)
-    | to_entries
-    | map(.value + {sort_order: (.key + 1)} | del(._count))
 '

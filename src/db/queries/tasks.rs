@@ -345,6 +345,17 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    /// AN ARCHIVED FEED TASK IS STATE, NOT HISTORY. For an append-only feed
+    /// epic (feeds.allium: `AppendOnlyFeed`) the archived row IS the record
+    /// that its `external_id` has been retired — dispatch keeps no other. The
+    /// row is the `ON CONFLICT` target that makes a later emission of the same
+    /// id a no-op refresh instead of a fresh card.
+    ///
+    /// So a future "prune archived tasks older than N days" — an otherwise
+    /// obviously reasonable feature — would silently resurrect every card the
+    /// user has ever triaged. Any such job must exclude rows with a non-null
+    /// `external_id` whose epic is append-only, or replace the mechanism with
+    /// a real retired-id record first.
     async fn delete_task(&self, id: TaskId) -> Result<()> {
         self.db_call(move |conn| {
             let rows = conn
@@ -974,9 +985,10 @@ impl Database {
     /// Shared body of [`TaskCrud::upsert_feed_tasks`] and
     /// [`TaskCrud::upsert_feed_tasks_additive`]. `delete_absent` selects
     /// between them: `true` runs the per-epic stale delete that makes the feed
-    /// the source of truth, `false` skips it entirely so a tainted emission's
-    /// omissions never reach a `DELETE` (feeds.allium:
-    /// `DegradedNonEmptyEmission`).
+    /// the source of truth, `false` skips it entirely so omissions never reach
+    /// a `DELETE` — either because the emission is untrusted or because the
+    /// epic never mirrors (feeds.allium: `DegradedNonEmptyEmission`,
+    /// `AppendOnlyFeed`).
     ///
     /// One body rather than two, so the insert/update half — which is where
     /// every field-precedence rule in `UpsertFeedTasks` lives — cannot drift
