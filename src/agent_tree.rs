@@ -31,11 +31,47 @@ pub enum TreeNodeKind {
     Directory,
 }
 
+/// How many lines one path gained and lost against the baseline — the spec's
+/// `LineCounts` value type.
+///
+/// One struct rather than two `Option<u32>` fields because git either counts a
+/// path or it does not: there is no answer where an addition count arrives
+/// without a removal count. Modelling it this way makes half a count
+/// unrepresentable instead of merely forbidden.
+///
+/// Both numbers may legitimately be zero. A permission-only change is a real
+/// change that moved no lines, which is also why this is not collapsed into a
+/// single signed total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LineCounts {
+    pub added: u32,
+    pub removed: u32,
+}
+
+impl LineCounts {
+    /// Fold another path's counts into these. Used to sum a directory over its
+    /// descendants — see [`build_tree`].
+    fn merge(self, other: LineCounts) -> LineCounts {
+        LineCounts {
+            added: self.added.saturating_add(other.added),
+            removed: self.removed.saturating_add(other.removed),
+        }
+    }
+}
+
 /// One changed file as git reported it, with a path relative to the pane root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitFileChange {
     pub path: PathBuf,
     pub change: FileChange,
+    /// `None` when git reported no counts for this path, which happens in
+    /// exactly two cases and both are facts about the file rather than
+    /// decisions of ours: the path is untracked, so a diff against the
+    /// baseline cannot see it; or git reports it binary. Rendering `+0 -0`
+    /// instead would read as "nothing changed in there", which is the one
+    /// thing that is certainly false of a file the agent just wrote. See the
+    /// spec's `UntrackedFilesHaveNoLineCounts`.
+    pub counts: Option<LineCounts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +81,14 @@ pub struct TreeNode {
     pub badge: Option<FileChange>,
     pub expanded: bool,
     pub children: Vec<TreeNode>,
+    /// For a file, that file's own counts. For a directory, the sum over the
+    /// changed files beneath it, so a collapsed directory still says how much
+    /// is inside it.
+    ///
+    /// The sum SKIPS descendants that have none rather than reading them as
+    /// zero, and is itself `None` when no descendant has any — see the spec's
+    /// `DirectoryCountsSumDescendants`.
+    pub counts: Option<LineCounts>,
 }
 
 impl TreeNode {
@@ -125,6 +169,9 @@ pub fn parse_name_status(output: &str) -> Vec<GitFileChange> {
         changes.push(GitFileChange {
             path: PathBuf::from(path),
             change,
+            // Filled in from the separate numstat query by
+            // [`attach_line_counts`]; this parser is told only what happened.
+            counts: None,
         });
     }
     changes
@@ -143,8 +190,74 @@ pub fn parse_untracked(output: &str) -> Vec<GitFileChange> {
         .map(|path| GitFileChange {
             path: PathBuf::from(path),
             change: FileChange::Added,
+            // Never filled in, and not an omission: an untracked path is not in
+            // the index, so the numstat query cannot see it at all.
+            counts: None,
         })
         .collect()
+}
+
+/// Parse the output of `git diff --numstat --no-renames -z <baseline>`: one
+/// NUL-terminated record per path, holding `<added>\t<removed>\t<path>`.
+///
+/// A path git could not count carries `-` in both number fields — that is how
+/// git spells a binary diff — and yields no entry rather than a zero. The
+/// caller cannot tell that apart from "git said nothing about this path", and
+/// does not need to: both mean the row shows no counts.
+///
+/// `-z` for the same two reasons as [`parse_name_status`]: git does not C-quote
+/// non-ASCII paths, and a path containing whitespace stays unambiguous. That
+/// second reason is why the path is taken as *everything after the second tab*
+/// rather than as a third whitespace-delimited field — a filename may contain a
+/// tab, and splitting on every tab would truncate it.
+///
+/// An unreadable record is skipped, not guessed at, in line with this repo's
+/// soft-fail-decoding convention. One bad record must not cost the caller the
+/// counts of every other path.
+pub fn parse_numstat(output: &str) -> BTreeMap<PathBuf, LineCounts> {
+    let mut counts = BTreeMap::new();
+
+    for record in output.split('\0').filter(|r| !r.is_empty()) {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            tracing::warn!(record, "skipping malformed git numstat record");
+            continue;
+        };
+        if path.is_empty() {
+            tracing::warn!(record, "skipping git numstat record with no path");
+            continue;
+        }
+        // A binary diff. Not an error and not a zero — see the doc comment.
+        if added == "-" || removed == "-" {
+            continue;
+        }
+        let (Ok(added), Ok(removed)) = (added.parse::<u32>(), removed.parse::<u32>()) else {
+            tracing::warn!(
+                record,
+                "skipping git numstat record with unparseable counts"
+            );
+            continue;
+        };
+        counts.insert(PathBuf::from(path), LineCounts { added, removed });
+    }
+
+    counts
+}
+
+/// Fold a numstat map into the change set, matching on path.
+///
+/// A change with no entry in the map keeps `None`. That covers both the
+/// untracked paths — which the numstat query cannot see at all — and any
+/// tracked path whose record was skipped, and the two are deliberately not
+/// distinguished: the row shows no counts either way.
+pub fn attach_line_counts(changes: &mut [GitFileChange], counts: &BTreeMap<PathBuf, LineCounts>) {
+    for change in changes {
+        if let Some(found) = counts.get(&change.path) {
+            change.counts = Some(*found);
+        }
+    }
 }
 
 /// Build the changed-paths tree rooted at `root` from git's answer.
@@ -160,7 +273,7 @@ pub fn parse_untracked(output: &str) -> Vec<GitFileChange> {
 /// untracked. [`change_precedence`] resolves it, so which query ran first
 /// cannot change a badge.
 pub fn build_tree(root: &Path, changes: &[GitFileChange]) -> TreeNode {
-    let mut badges: BTreeMap<Vec<OsString>, FileChange> = BTreeMap::new();
+    let mut badges: BTreeMap<Vec<OsString>, (FileChange, Option<LineCounts>)> = BTreeMap::new();
 
     for change in changes {
         let Some(components) = relative_components(&change.path) else {
@@ -168,12 +281,21 @@ pub fn build_tree(root: &Path, changes: &[GitFileChange]) -> TreeNode {
         };
         badges
             .entry(components)
-            .and_modify(|existing| {
+            .and_modify(|(existing, existing_counts)| {
                 if change_precedence(change.change) > change_precedence(*existing) {
                     *existing = change.change;
                 }
+                // Counts are merged independently of the badge, because the two
+                // queries that collide on a path do not both supply them: only
+                // the diff counts, and the untracked listing never does. Taking
+                // the counted answer whichever query produced it is what keeps
+                // the result independent of which ran first — the same property
+                // `change_precedence` gives the badge.
+                if existing_counts.is_none() {
+                    *existing_counts = change.counts;
+                }
             })
-            .or_insert(change.change);
+            .or_insert((change.change, change.counts));
     }
 
     let root_name = root
@@ -186,14 +308,16 @@ pub fn build_tree(root: &Path, changes: &[GitFileChange]) -> TreeNode {
         badge: None,
         expanded: false,
         children: Vec::new(),
+        counts: None,
     };
 
-    for (components, badge) in badges {
-        insert_path(&mut root_node, &components, badge);
+    for (components, (badge, counts)) in badges {
+        insert_path(&mut root_node, &components, badge, counts);
     }
 
     sort_children(&mut root_node);
     compute_expansion(&mut root_node);
+    compute_counts(&mut root_node);
 
     root_node
 }
@@ -242,7 +366,12 @@ pub(crate) fn relative_components(path: &Path) -> Option<Vec<OsString>> {
     components.filter(|c| !c.is_empty())
 }
 
-fn insert_path(node: &mut TreeNode, components: &[OsString], badge: FileChange) {
+fn insert_path(
+    node: &mut TreeNode,
+    components: &[OsString],
+    badge: FileChange,
+    counts: Option<LineCounts>,
+) {
     let Some((head, rest)) = components.split_first() else {
         return;
     };
@@ -255,6 +384,7 @@ fn insert_path(node: &mut TreeNode, components: &[OsString], badge: FileChange) 
             badge: Some(badge),
             expanded: false,
             children: Vec::new(),
+            counts,
         });
         return;
     }
@@ -268,11 +398,43 @@ fn insert_path(node: &mut TreeNode, components: &[OsString], badge: FileChange) 
                 badge: None,
                 expanded: false,
                 children: Vec::new(),
+                counts: None,
             });
             node.children.len() - 1
         }
     };
-    insert_path(&mut node.children[child_index], rest, badge);
+    insert_path(&mut node.children[child_index], rest, badge, counts);
+}
+
+/// Give every directory node the sum of the counts beneath it, and return what
+/// this node contributes to its own parent.
+///
+/// The sum SKIPS descendants with no counts rather than folding them in as
+/// zero, and a directory whose descendants all lack counts is left with `None`.
+/// A directory holding one modified file and three brand-new ones must not
+/// report the modified file's numbers as though they were the whole story of
+/// the directory, and `+0 -0` on a directory full of unstaged files would read
+/// as "nothing changed in there" — which is the one thing that is certainly
+/// false. See the spec's `DirectoryCountsSumDescendants`.
+///
+/// A file node's own counts are already in place from [`insert_path`] and are
+/// left untouched: this pass only ever writes to directories.
+fn compute_counts(node: &mut TreeNode) -> Option<LineCounts> {
+    if node.kind == TreeNodeKind::File {
+        return node.counts;
+    }
+
+    let mut total: Option<LineCounts> = None;
+    for child in &mut node.children {
+        if let Some(child_counts) = compute_counts(child) {
+            total = Some(match total {
+                Some(running) => running.merge(child_counts),
+                None => child_counts,
+            });
+        }
+    }
+    node.counts = total;
+    total
 }
 
 fn sort_children(node: &mut TreeNode) {
@@ -309,6 +471,243 @@ mod tests {
         GitFileChange {
             path: PathBuf::from(path),
             change,
+            counts: None,
+        }
+    }
+
+    fn modified(path: &str) -> GitFileChange {
+        changed(path, FileChange::Modified)
+    }
+
+    fn added(path: &str) -> GitFileChange {
+        changed(path, FileChange::Added)
+    }
+
+    fn counted(path: &str, change: FileChange, added: u32, removed: u32) -> GitFileChange {
+        GitFileChange {
+            path: PathBuf::from(path),
+            change,
+            counts: Some(LineCounts { added, removed }),
+        }
+    }
+
+    /// Build a `--numstat -z` stream. Git emits one NUL-terminated record per
+    /// path, the three fields inside it separated by tabs.
+    fn numstat_stream(records: &[&str]) -> String {
+        records.iter().map(|r| format!("{r}\0")).collect()
+    }
+
+    fn counts_of(node: &TreeNode, path: &[&str]) -> Option<LineCounts> {
+        let segments: Vec<String> = path.iter().map(|s| (*s).to_owned()).collect();
+        node.node_at(&segments).expect("node should exist").counts
+    }
+
+    // -- parse_numstat ----------------------------------------------------
+
+    #[test]
+    fn numstat_reads_added_and_removed_for_each_path() {
+        let out = numstat_stream(&["12\t3\tsrc/foo.rs", "0\t7\tsrc/bar.rs"]);
+        let parsed = parse_numstat(&out);
+
+        assert_eq!(
+            parsed.get(Path::new("src/foo.rs")),
+            Some(&LineCounts {
+                added: 12,
+                removed: 3
+            })
+        );
+        assert_eq!(
+            parsed.get(Path::new("src/bar.rs")),
+            Some(&LineCounts {
+                added: 0,
+                removed: 7
+            })
+        );
+    }
+
+    /// Git spells a binary diff `-\t-\t<path>`. That is an absence of counts,
+    /// not a zero, and it must not become one.
+    #[test]
+    fn numstat_reports_no_counts_for_a_binary_file() {
+        let out = numstat_stream(&["-\t-\tassets/logo.png"]);
+        assert_eq!(parse_numstat(&out).get(Path::new("assets/logo.png")), None);
+    }
+
+    /// One unreadable record must not cost the caller the rest of the answer —
+    /// the same soft-fail-decoding rule `parse_name_status` follows.
+    #[test]
+    fn numstat_skips_a_malformed_record_and_keeps_the_others() {
+        let out = numstat_stream(&["not a record", "4\t1\tsrc/ok.rs", "x\ty\tsrc/bad.rs"]);
+        let parsed = parse_numstat(&out);
+
+        assert_eq!(
+            parsed.get(Path::new("src/ok.rs")),
+            Some(&LineCounts {
+                added: 4,
+                removed: 1
+            })
+        );
+        assert_eq!(parsed.get(Path::new("src/bad.rs")), None);
+        assert_eq!(parsed.len(), 1);
+    }
+
+    /// A path is every byte after the second tab, so a filename containing a
+    /// space or a tab survives. `-z` is what makes that unambiguous.
+    #[test]
+    fn numstat_keeps_a_path_containing_whitespace_intact() {
+        let out = numstat_stream(&["1\t0\tdocs/my notes.md"]);
+        assert_eq!(
+            parse_numstat(&out).get(Path::new("docs/my notes.md")),
+            Some(&LineCounts {
+                added: 1,
+                removed: 0
+            })
+        );
+    }
+
+    // -- attach_line_counts -----------------------------------------------
+
+    #[test]
+    fn attaching_counts_matches_on_path() {
+        let mut changes = vec![modified("src/foo.rs"), modified("src/bar.rs")];
+        let counts = parse_numstat(&numstat_stream(&["12\t3\tsrc/foo.rs"]));
+
+        attach_line_counts(&mut changes, &counts);
+
+        assert_eq!(
+            changes[0].counts,
+            Some(LineCounts {
+                added: 12,
+                removed: 3
+            })
+        );
+        // In the diff but absent from the numstat: rendered with no counts
+        // rather than with a guessed zero.
+        assert_eq!(changes[1].counts, None);
+    }
+
+    #[test]
+    fn attaching_counts_leaves_an_untracked_path_alone() {
+        let mut changes = vec![added("new.rs")];
+        attach_line_counts(&mut changes, &parse_numstat(""));
+        assert_eq!(changes[0].counts, None);
+    }
+
+    // -- counts on the tree -----------------------------------------------
+
+    #[test]
+    fn a_file_node_carries_its_own_counts() {
+        let tree = build_tree(
+            &root(),
+            &[counted("src/foo.rs", FileChange::Modified, 12, 3)],
+        );
+        assert_eq!(
+            counts_of(&tree, &["src", "foo.rs"]),
+            Some(LineCounts {
+                added: 12,
+                removed: 3
+            })
+        );
+    }
+
+    #[test]
+    fn an_untracked_file_node_has_no_counts() {
+        let tree = build_tree(&root(), &[added("new.rs")]);
+        assert_eq!(counts_of(&tree, &["new.rs"]), None);
+    }
+
+    /// Zero is a real answer — a permission-only change moves no lines — so it
+    /// must survive as `Some(0, 0)` and not collapse into "no counts".
+    #[test]
+    fn zero_counts_are_kept_rather_than_read_as_absent() {
+        let tree = build_tree(&root(), &[counted("mode.sh", FileChange::Modified, 0, 0)]);
+        assert_eq!(
+            counts_of(&tree, &["mode.sh"]),
+            Some(LineCounts {
+                added: 0,
+                removed: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_directory_node_sums_its_descendants() {
+        let tree = build_tree(
+            &root(),
+            &[
+                counted("src/a.rs", FileChange::Modified, 12, 3),
+                counted("src/inner/b.rs", FileChange::Added, 5, 1),
+            ],
+        );
+
+        assert_eq!(
+            counts_of(&tree, &["src"]),
+            Some(LineCounts {
+                added: 17,
+                removed: 4
+            })
+        );
+        assert_eq!(
+            counts_of(&tree, &["src", "inner"]),
+            Some(LineCounts {
+                added: 5,
+                removed: 1
+            })
+        );
+    }
+
+    /// The whole reason the sum is over `Option`: an unstaged file contributes
+    /// nothing, rather than contributing a zero that would drag the directory's
+    /// total down to a number smaller than what is really in there.
+    #[test]
+    fn a_directory_sum_skips_descendants_that_have_no_counts() {
+        let tree = build_tree(
+            &root(),
+            &[
+                counted("src/a.rs", FileChange::Modified, 12, 3),
+                added("src/brand_new.rs"),
+            ],
+        );
+
+        assert_eq!(
+            counts_of(&tree, &["src"]),
+            Some(LineCounts {
+                added: 12,
+                removed: 3
+            })
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_counted_descendants_has_no_counts() {
+        let tree = build_tree(&root(), &[added("src/one.rs"), added("src/two.rs")]);
+        assert_eq!(counts_of(&tree, &["src"]), None);
+    }
+
+    /// The `git rm --cached` collision: the diff reports the path with counts
+    /// and the untracked listing reports it without. The counted answer is the
+    /// informative one, and which query ran first must not decide it.
+    #[test]
+    fn a_path_reported_by_both_queries_keeps_the_counts_it_has() {
+        let orders: [Vec<GitFileChange>; 2] = [
+            vec![
+                counted("foo.rs", FileChange::Deleted, 0, 9),
+                added("foo.rs"),
+            ],
+            vec![
+                added("foo.rs"),
+                counted("foo.rs", FileChange::Deleted, 0, 9),
+            ],
+        ];
+        for changes in orders {
+            let tree = build_tree(&root(), &changes);
+            assert_eq!(
+                counts_of(&tree, &["foo.rs"]),
+                Some(LineCounts {
+                    added: 0,
+                    removed: 9
+                })
+            );
         }
     }
 

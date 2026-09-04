@@ -6,12 +6,14 @@
 --        worktree have changed.
 -- Includes: The git query that answers "what changed" (a diff of the worktree
 --           against this branch's fork point from the task's base branch, plus
---           untracked files); the companion pane's lifecycle (split at
---           agent-window
+--           untracked files, plus how many lines each changed file gained and
+--           lost); the companion pane's lifecycle (split at agent-window
 --           creation, global toggle keybinding bound alongside the board TUI,
---           kill-pane + re-split); and the tree/badge rendering rules
---           (worktree-rooted tree, Added/Modified/Deleted badges,
---           auto-expanded directories).
+--           kill-pane + re-split); the tree/badge rendering rules
+--           (worktree-rooted tree, Added/Modified/Deleted badges, line counts,
+--           auto-expanded directories); and the DIFF PANE the tree opens
+--           beneath itself to show the contents of the change (its open set,
+--           its own lifecycle, and its rendering caps).
 -- Excludes: Task-activity classification and the activity-signal hook (see
 --           agent-health.allium — HookPreToolUse fires for both PreToolUse and
 --           PostToolUse and is NOT modified by anything in this spec);
@@ -63,12 +65,27 @@ enum FileChange { added | modified | deleted }
 
 enum TreeNodeKind { file | directory }
 
+-- Why the diff pane is showing a placeholder for a file instead of its
+-- contents. Each value is a fact about the file, not a failure of the pane:
+-- the pane rendered exactly what it could, and says which of these it hit.
+--
+--   untracked -- the file is not in the index, so there is no diff to take.
+--                Git's own advice is to stage it, and that is what the pane
+--                repeats. See UntrackedFilesHaveNoLineCounts.
+--   binary    -- git reports the change without line contents.
+--   too_large -- the diff exceeds config.agent_tree_diff_max_bytes.
+enum DiffRefusal { untracked | binary | too_large }
+
 -- Which of the two writers set the pane's current notice. The pane shows one
 -- notice at a time in one line of border, so the two have to share a field —
 -- and a successful refresh must clear a stale "git failed" without also
 -- wiping the answer to a keypress the user made half a second ago. See
 -- RefreshAgentTree's clearing expression.
-enum NoticeSource { git_query | editor_open }
+--
+-- The second writer used to be a failed file open, back when Space and Enter
+-- launched an editor. It is now a failed diff-pane split, which is the same
+-- shape of event: the direct, immediate answer to a keypress.
+enum NoticeSource { git_query | diff_open }
 
 ------------------------------------------------------------
 -- Value Types
@@ -82,6 +99,46 @@ enum NoticeSource { git_query | editor_open }
 value GitFileChange {
     path:   String       -- relative to the pane root, exactly as git reports it
     change: FileChange
+
+    -- How many lines this path gained and lost against the baseline, as git
+    -- counted them. Null for an UNTRACKED path and only for an untracked path:
+    -- a diff against the baseline cannot see a file that is not in the index,
+    -- so there is no count to report and none is invented (see
+    -- UntrackedFilesHaveNoLineCounts). A tracked path always has both, and
+    -- both may be zero — a permission-only change is a real change with no
+    -- lines moved.
+    --
+    -- Null for a BINARY path too, for the same reason rather than a different
+    -- one: git reports no line counts for a binary diff, so neither does this.
+    --
+    -- ONE nullable pair, not two nullable numbers: git either counts a path or
+    -- it does not, and there is no case where it reports an addition count
+    -- without a removal count. Modelling them as one value makes "half a
+    -- count" unrepresentable rather than merely forbidden.
+    counts: LineCounts?
+}
+
+-- How many lines one path gained and lost against the baseline. Both numbers
+-- may be zero — a permission-only change is a real change with no lines moved,
+-- and is the reason this is not collapsed into a single signed total.
+value LineCounts {
+    added:   Integer
+    removed: Integer
+}
+
+-- The diff of one changed file, as the diff pane shows it. Derived on every
+-- refresh from the same baseline the tree is derived from, and persisted
+-- nowhere — the same statement AgentTreeIsGitDerived makes about badges, made
+-- about contents.
+--
+-- The body is whatever git printed, verbatim: hunk headers, context and
+-- changed lines. It is not parsed, re-indented or re-coloured beyond marking
+-- additions and removals, because anything this pane invented about the text
+-- would be a second source of truth about the change.
+value FileDiff {
+    path: String            -- relative to the pane root; matches a GitFileChange.path
+    body: String?           -- null exactly when refusal != null
+    refusal: DiffRefusal?   -- why there is no body, when there is none
 }
 
 -- One row of the rendered tree. Nodes are derived, not stored: they are
@@ -95,6 +152,22 @@ value AgentTreeNode {
     kind:      TreeNodeKind
     badge:     FileChange?       -- null for directories; never null for files
     expanded:  Boolean           -- directories only; always false for files
+
+    -- The line counts shown on this row. For a FILE they are the file's own
+    -- (null when it has none — see GitFileChange). For a DIRECTORY they are
+    -- the sum over every changed file beneath it, so a collapsed directory
+    -- still says how much is inside; see DirectoryCountsSumDescendants.
+    --
+    -- A directory's sum SKIPS descendants that have no counts rather than
+    -- treating them as zero, and is itself null only when no descendant has
+    -- any. Counting an unstaged file as "+0 -0" would read as "nothing
+    -- changed in there", which is the one thing that is certainly false.
+    counts: LineCounts?
+
+    -- Whether this file's diff is currently open in the diff pane. Always
+    -- false for a directory: a directory is a route to changed files, not a
+    -- thing with contents of its own (see OnlyFilesOpenDiffs).
+    diff_open: Boolean
 }
 
 ------------------------------------------------------------
@@ -134,6 +207,13 @@ entity AgentTreePane {
     -- repeatedly-failing git cannot turn the refresh trigger into a spin.
     last_rendered_at: Timestamp
 
+    -- The same stamp for the diff pane's own redraw timer
+    -- (see RefreshAgentTreeDiff). Separate from last_rendered_at because the
+    -- two panes are separate processes on separate clocks: a tree tick that
+    -- overran config.agent_tree_git_timeout must not also delay the diff, and
+    -- neither pane may stall waiting for the other's git to return.
+    last_diff_rendered_at: Timestamp
+
     -- What the last SUCCESSFUL git query returned. The rendered tree is a
     -- function of this and nothing else, which is what makes "keep the last
     -- good tree" a statement about one field rather than about the renderer's
@@ -143,29 +223,39 @@ entity AgentTreePane {
     -- changes yet — both render an empty tree.
     rendered_changes: [GitFileChange]
 
-    -- The editor pane opened from this tree, if any. At most one per agent
-    -- window (see OneEditorPanePerAgentWindow): opening a second file replaces
-    -- what this pane is running rather than adding another pane. It lives in
-    -- the same window as this pane but is NOT an AgentTreePane — nothing
-    -- renders a tree in it, and the toggle does not act on it.
-    editor_pane: core/TmuxPane?
+    -- Which files' diffs the user has opened, relative to root. The ONLY
+    -- state in this spec that the user builds up rather than git supplying:
+    -- everything else the pane shows is re-derived from a git query every
+    -- tick. It is a set, not a cursor — the pane shows every open file's diff
+    -- at once, which is what makes ToggleAllAgentTreeFileDiffs a bulk version
+    -- of the single-file toggle rather than a separate mode.
+    --
+    -- It holds PATHS, not nodes, so it survives a refresh that rebuilds every
+    -- node. A path whose file stops being reported by git simply stops
+    -- matching anything and contributes no diff; it is not an error, and it is
+    -- not pruned either (see OpenDiffPathsMaySurviveTheirFiles).
+    --
+    -- Empty is the initial state and the resting state: emptying it is what
+    -- closes the diff pane (see CloseAgentTreeDiffPaneWhenEmpty).
+    open_diff_paths: [String]
 
-    -- Which file the editor pane is showing, relative to root. Set on every
-    -- open, so it is what distinguishes "replaced the file" from "did nothing"
-    -- when the pane is reused (see ReplaceAgentTreeEditorFile).
-    editor_file: String? when editor_pane != null
+    -- The pane showing those diffs, beneath this one. Exists exactly while
+    -- open_diff_paths is non-empty (see DiffPaneExistsWhenSomethingIsOpen).
+    -- It lives in the same window and is NOT an AgentTreePane — nothing
+    -- renders a tree in it, and the global toggle does not act on it directly.
+    diff_pane: core/TmuxPane?
 
     -- Why the last thing the pane tried to do failed, shown in this pane's own
-    -- border until the next keypress. Two things set it: a failed file open
-    -- (see AgentTreeEditorOpenFailureIsVisible) and a failed git query (see
-    -- AgentTreeGitFailureKeepsLastGoodTree). The only thing the pane ever
+    -- border until the next keypress. Two things set it: a failed diff-pane
+    -- split (see AgentTreeDiffPaneFailureIsVisible) and a failed git query
+    -- (see AgentTreeGitFailureKeepsLastGoodTree). The only thing the pane ever
     -- reports to the user, and while it is set the pane's border is drawn in
     -- the error colour (see AgentTreeNoticeRedensBorder).
     error_notice: String?
 
     -- Which writer set error_notice. Exists only so a recovering git query can
-    -- clear its own stale notice without clearing an editor-open notice the
-    -- user has had barely a second to read.
+    -- clear its own stale notice without clearing a diff-open notice the user
+    -- has had barely a second to read.
     notice_source: NoticeSource when error_notice != null
 
     transitions status {
@@ -186,7 +276,7 @@ config {
 
     -- Redraw cadence. Each tick runs the git query (see AgentTreeGitQuery) and
     -- rebuilds only if its answer changed, so the visible cost of a one-second
-    -- poll is four short-lived git processes per open pane — five when the
+    -- poll is five short-lived git processes per open pane — six when the
     -- baseline resolution has two candidates to rank. That is well below the
     -- point where a follow-along view feels laggy: the added processes are
     -- merge-base probes, which read refs and objects and nothing else, and
@@ -205,10 +295,11 @@ config {
     -- the pane can ignore a keypress. Five seconds is generous for a name-only
     -- diff and short enough that a wedged git reads as a hiccup.
     --
-    -- The bound is per command and a tick runs up to five of them, so the
-    -- arithmetic worst case is five times this. Only two of the five can
+    -- The bound is per command and a tick runs up to six of them, so the
+    -- arithmetic worst case is six times this. Only three of the six can
     -- realistically reach it: an index lock is by far the commonest cause of a
-    -- slow query, and only the diff and the untracked listing touch the index.
+    -- slow query, and only the two diffs and the untracked listing touch the
+    -- index.
     -- The baseline resolution's merge-base probes take no lock, so they do not
     -- move the practical ceiling.
     agent_tree_git_timeout: Duration = 5.seconds
@@ -218,16 +309,28 @@ config {
     -- binding shadows nothing. See the ToggleKeyChoice open question.
     agent_tree_toggle_key: String = "e"
 
-    -- Height of the editor pane as a percentage of the agent window. It spans
-    -- the full window WIDTH, so the tree and the agent's own pane share the
-    -- remaining 40% above it — unlike agent_tree_pane_percent, which divides
-    -- the window horizontally. Deliberately the larger share: reading the file
-    -- is the point of opening it.
-    agent_tree_editor_pane_percent: Integer = 60
+    -- Height of the diff pane as a percentage of the COMPANION PANE'S COLUMN,
+    -- not of the agent window. The diff pane subdivides the tree's own 30%
+    -- column rather than spanning the window, so the agent's own pane keeps
+    -- every column it had and is untouched by opening a diff.
+    --
+    -- Deliberately the larger share of that column: the tree is a list of
+    -- short path segments and stays legible in a few rows, while reading the
+    -- change is the point of opening it. The predecessor of this value gave
+    -- the editor pane 60% of the whole WINDOW's height, which took the room
+    -- from the agent instead.
+    agent_tree_diff_pane_percent: Integer = 66
 
-    -- Which editor to launch is NOT declared here: it is core/config.editor_fallback
-    -- and the resolution rule stated with it, shared with the pop-out task and
-    -- epic editors (see OpenAgentTreeFileInEditor's guidance).
+    -- How much diff text the pane will render for ONE file before refusing it
+    -- and showing a placeholder instead (DiffRefusal.too_large). The cap is
+    -- per file, not per pane: one enormous generated file must not cost the
+    -- user the diffs of the files either side of it, which is exactly what a
+    -- whole-pane budget would do depending on sort order.
+    --
+    -- Bounded for the same reason config.agent_tree_git_timeout is: the
+    -- rendering runs inline in a single-threaded loop that also has to answer
+    -- keypresses, so an unbounded diff is an unbounded freeze.
+    agent_tree_diff_max_bytes: Integer = 1048576
 }
 
 ------------------------------------------------------------
@@ -411,17 +514,20 @@ rule HideAgentTreePane {
         -- and restarts on the next show; that is cheap, because all its state
         -- comes from one git query it can just run again.
         --
-        -- == The editor pane is NOT hidden with it ==
-        -- Only the tree pane is killed. An editor pane opened from it stays
-        -- exactly where it was, still showing its file: the user asked for that
-        -- file, and did not ask for it to close when they collapsed the tree.
-        -- Nothing is orphaned by this, because the pane is found by a mark on
-        -- the pane itself rather than by anything the renderer holds — so a
-        -- later show, in a new renderer process, still reuses that same pane on
-        -- the next open (see ReplaceAgentTreeEditorFile). The pane's own life
-        -- ends with the editor running in it, or with the window
-        -- (DiscardAgentTreePaneOnWindowGone), or when the window is pinned into
-        -- the board (see the ToggleVsSplitPaneInteraction note below).
+        -- == The diff pane IS hidden with it ==
+        -- Both panes go, and the open set goes with them — see
+        -- KillAgentTreeDiffPaneWithItsTree, which fires on the same transition
+        -- this rule performs. Nothing drives a diff pane whose tree is gone: no
+        -- process refreshes it, no keypress can change what it shows, and the
+        -- toggle that brings the tree back does not act on it.
+        --
+        -- The predecessor of this paragraph said the opposite, of the editor
+        -- pane this replaced, and it was right about that one: an editor
+        -- holding a file the user asked for is useful with or without a tree
+        -- beside it, and it could be reused by a later renderer because it was
+        -- found by a mark rather than by anything a renderer held. A diff pane
+        -- has neither property — it is a view of a set only the tree can
+        -- change — so it is killed rather than orphaned.
         --
         -- The killed pane is the companion pane, never the agent's own pane:
         -- the target is resolved from the AgentTreePane record for the focused
@@ -443,12 +549,12 @@ rule HideAgentTreePane {
         -- == How the companion pane is identified ==
         -- By a role marker dispatch writes on the pane at the moment it creates
         -- it: a pane-scoped tmux user option whose value says what the pane is
-        -- for. The companion tree pane carries the agent-tree role; the editor
-        -- pane OpenAgentTreeFileInEditor opens carries the editor role. The
-        -- lookup matches the role's EXACT value, so the two never stand in for
-        -- each other — a toggle cannot kill the editor, and an open cannot
-        -- respawn the tree. No pane in the window carrying the agent-tree role
-        -- means hidden.
+        -- for. The companion tree pane carries the agent-tree role; the pane
+        -- SplitAgentTreeDiffPane opens carries the diff role. The lookup
+        -- matches the role's EXACT value, so the two never stand in for each
+        -- other — a toggle cannot kill the diff pane, and opening a diff
+        -- cannot respawn the tree. No pane in the window carrying the
+        -- agent-tree role means hidden.
         --
         -- One marker, both panes, and that is the point: "a pane dispatch put in
         -- this window" is now exactly "a pane carrying this option", whatever
@@ -465,10 +571,10 @@ rule HideAgentTreePane {
         -- stable. It whitespace-split a command line, so a dispatch binary at a
         -- path containing a space mis-parsed; it compared argv0 by basename
         -- because that path may be absolute; and it had to actively defend
-        -- against substring matching, because an editor pane showing this very
-        -- file has "agent-tree" in its command line. A marker written by the code
-        -- that created the pane needs none of those defences: it cannot be
-        -- confused by the contents of a file an editor happens to be showing.
+        -- against substring matching, because a pane showing this very file has
+        -- "agent-tree" in its command line. A marker written by the code that
+        -- created the pane needs none of those defences: it cannot be confused
+        -- by the contents of a file some other pane happens to be displaying.
         --
         -- ACCEPTED COST: the marker is NOT retroactive. The start command was
         -- reported for panes already running; an option can only be written to a
@@ -494,8 +600,8 @@ rule HideAgentTreePane {
         --   * With focus in the companion pane — which the user must take to
         --     press any key in it — the single inactive pane is the AGENT'S, so
         --     the toggle killed the live claude session.
-        --   * With an editor pane open (OpenAgentTreeFileInEditor) two panes
-        --     are inactive, which read as "hidden", so the toggle split a
+        --   * With a second dispatch-created pane open beside the tree, two
+        --     panes are inactive, which read as "hidden", so the toggle split a
         --     SECOND companion pane.
         -- Identifying the pane by what it is rather than by where focus happens
         -- to be is what makes "the companion pane, never the agent's own pane"
@@ -512,7 +618,7 @@ rule HideAgentTreePane {
         -- division wrong. On the mutation side: `join_pane` drains the
         -- companion panes left behind when it moves the agent's own pane out
         -- (see split-pane.allium's PinTaskInSplitPane guidance) — every pane
-        -- dispatch put in that window, the editor pane included, since with one
+        -- dispatch put in that window, the diff pane included, since with one
         -- open the old single-inactive-pane lookup was ambiguous and orphaned
         -- both. `exec_swap_split_pane` resyncs a renamed window's companion
         -- pane to the task the new name implies (see SwapSplitPane's guidance).
@@ -644,11 +750,11 @@ rule RefreshAgentTree {
     ensures: pane.last_rendered_at = now
     ensures: pane.rendered_changes = changes
 
-    -- A working git clears its own stale failure notice, and nothing else. An
-    -- editor-open notice is the answer to a keypress the user made moments ago
+    -- A working git clears its own stale failure notice, and nothing else. A
+    -- diff-open notice is the answer to a keypress the user made moments ago
     -- and survives every refresh until they press the next key.
     ensures: pane.error_notice =
-        if old(pane.notice_source) = editor_open: old(pane.error_notice)
+        if old(pane.notice_source) = diff_open: old(pane.error_notice)
         else: null
 
     ensures:
@@ -670,7 +776,21 @@ rule RefreshAgentTree {
                     -- under it changed, so the path to every badge is visible
                     -- without the view degenerating into a full repo browser.
                     expanded: entry.kind = directory
-                              and has_changed_descendant(changes, entry.path)
+                              and has_changed_descendant(changes, entry.path),
+                    -- A file shows its own counts; a directory shows the sum
+                    -- over the changed files beneath it. Both come from the
+                    -- same query that produced the badges, so a row can never
+                    -- show a count and a badge that disagree about what
+                    -- happened.
+                    counts:
+                        if entry.kind = directory:
+                            sum_counts_below(changes, entry.path)
+                        else: counts_for_path(changes, entry.path),
+                    -- Whether the diff pane is currently showing this file.
+                    -- Read from the pane's open set, which the refresh never
+                    -- writes: a tick redraws the marker, it does not decide it.
+                    diff_open: entry.kind = file
+                               and pane.open_diff_paths.contains(entry.path)
                 }
             )
 
@@ -686,11 +806,28 @@ rule RefreshAgentTree {
         --      is not enough.
         --   2. A name-and-status diff of the WORKING TREE against that
         --      baseline, with rename detection off.
-        --   3. A listing of untracked files, honouring the repo's ignore
+        --   3. A per-file added/removed line count of the same working-tree
+        --      diff, against the same baseline.
+        --   4. A listing of untracked files, honouring the repo's ignore
         --      rules.
         --
-        -- Steps 2 and 3 ask git for NUL-delimited output; step 1 emits commit
-        -- ids, which need none. Git's default is to C-quote
+        -- Step 3 is a SEPARATE ask, not a richer form of step 2, and the two
+        -- must agree on the baseline and on rename detection or a row's badge
+        -- and its counts would describe different comparisons. It reports
+        -- nothing for the untracked paths step 4 finds, which is where
+        -- UntrackedFilesHaveNoLineCounts comes from — not from a decision this
+        -- pane made, but from what a diff against the index can see. It also
+        -- reports no counts for a binary file, and that is the same fact
+        -- reaching the user by the same route.
+        --
+        -- A path present in step 2 but missing from step 3, or carrying a
+        -- count that will not parse, is rendered with no counts rather than
+        -- with a guess — the soft-fail-decoding convention again, and the same
+        -- reasoning as CollapsedGitStatusLetters: one unreadable field must
+        -- not cost the user the row.
+        --
+        -- Steps 2, 3 and 4 ask git for NUL-delimited output; step 1 emits
+        -- commit ids, which need none. Git's default is to C-quote
         -- any path containing a non-ASCII byte, so a file whose name holds an
         -- accented letter comes back C-quoted, with the letter replaced by its
         -- octal escapes — which would be rendered as that literal string and
@@ -702,7 +839,7 @@ rule RefreshAgentTree {
         -- task, committed or not — that is the point of diffing the working
         -- tree against the fork point rather than against HEAD. An agent that
         -- commits mid-session does not watch its work vanish from the pane.
-        -- The third covers files the agent created and has not staged, which
+        -- The fourth covers files the agent created and has not staged, which
         -- a diff cannot see.
         --
         -- == CollapsedGitStatusLetters ==
@@ -755,7 +892,11 @@ rule RefreshAgentTree {
         -- changed_tree(changes) derives (path, kind) entries for every changed
         -- path and each of its ancestor directories, deduplicated.
         -- change_for_path / has_changed_descendant are pure lookups over the
-        -- already-loaded change set.
+        -- already-loaded change set, and so are counts_for_path and
+        -- sum_counts_below. The sum skips descendants whose counts are null
+        -- rather than reading them as zero, and is itself null when every
+        -- descendant is null — see AgentTreeNode.counts for why "+0 -0" would
+        -- be a lie there.
         --
         -- == Resolves TreeScanExclusions ==
         -- The predecessor of this rule left open which subtrees a fuller
@@ -826,7 +967,7 @@ rule AgentTreeGitFailureKeepsLastGoodTree {
         -- AgentTreeNoticeRedensBorder. Without them, keeping the tree would be
         -- indistinguishable from the tree being correct.
         --
-        -- == Same notice channel as an editor-open failure ==
+        -- == Same notice channel as a failed diff-pane split ==
         -- error_notice is one field with two writers, and it is cleared by the
         -- next keypress (ClearAgentTreeErrorNotice) regardless of which one set
         -- it. Clearing a git-failure notice on a keypress is not a lie: if git
@@ -876,106 +1017,181 @@ rule ExitAgentTreeRenderer {
         -- (ShowAgentTreePane).
 }
 
-rule OpenAgentTreeFileInEditor {
-    -- Space or Enter on a file node, in a window that has no editor pane yet:
-    -- open one below the tree showing that file.
-    when: OpenSelectedAgentTreeFile(user, pane, node)
+rule OpenAgentTreeFileDiff {
+    -- Space or Enter on a file node whose diff is not open: open it.
+    when: ToggleSelectedAgentTreeFileDiff(user, pane, node)
 
     requires: node.kind = file
-    requires: pane.editor_pane = null
-    -- A deleted node names a file that is, by definition, not there. Refusing
-    -- on the badge rather than only on the filesystem check is what makes the
-    -- refusal predictable to the user: the badge they are looking at is the
-    -- reason. See NoEditorForDeletedNode.
-    requires: node.badge != deleted
-    -- And the filesystem is still consulted, because a file can vanish between
-    -- the last refresh and the keypress without the badge having caught up.
-    requires: file_exists(pane.root + "/" + node.path)
+    requires: not pane.open_diff_paths.contains(node.path)
 
-    ensures: pane.editor_pane = core/TmuxPane.created()
-    ensures: pane.editor_file = node.path
+    ensures: pane.open_diff_paths = old(pane.open_diff_paths).append(node.path)
+    ensures: AgentTreeDiffOpenSetChanged(pane: pane)
+
+    @guidance
+        -- == A deleted file opens like any other ==
+        -- This is the one place the behaviour reverses from what it replaced.
+        -- The editor this used to launch was REFUSED on a node badged deleted,
+        -- because there was no file to hand it and most editors would have
+        -- shown a misleading empty buffer. A diff has the opposite property:
+        -- the deleted file's content is exactly what git prints for it, so the
+        -- deleted case is the one where opening it is most useful.
+        --
+        -- An open question used to sit at the foot of this spec asking
+        -- precisely this — whether the pane should show content git holds but
+        -- the worktree does not, and through which key. It is answered and
+        -- removed: through this key, like every other file. There is no
+        -- deleted-file guard anywhere in this rule set, and no refusal rule
+        -- paired with it.
+        --
+        -- == Nothing is read from disk ==
+        -- The pane does not open the file, stat it, or check it exists. The
+        -- diff comes from git, which answers about the baseline and the index
+        -- as well as the working tree, so a path that is gone from disk still
+        -- has a diff. The file_exists check the editor rules needed has no
+        -- counterpart here and is not an omission.
+}
+
+rule CloseAgentTreeFileDiff {
+    -- Space or Enter on a file node whose diff IS open: close it. The same key
+    -- both ways, which is what makes it a toggle rather than an open command
+    -- with a separate close to remember.
+    when: ToggleSelectedAgentTreeFileDiff(user, pane, node)
+
+    requires: node.kind = file
+    requires: pane.open_diff_paths.contains(node.path)
+
+    ensures: pane.open_diff_paths = old(pane.open_diff_paths).remove(node.path)
+    ensures: AgentTreeDiffOpenSetChanged(pane: pane)
+}
+
+rule OpenAllAgentTreeFileDiffs {
+    -- The all-files key, pressed while nothing is open: open every changed
+    -- file's diff at once.
+    when: ToggleAllAgentTreeFileDiffs(user, pane)
+
+    requires: pane.open_diff_paths.is_empty()
+
+    ensures: pane.open_diff_paths =
+        pane.rendered_changes.map(c => c.path)
+    ensures: AgentTreeDiffOpenSetChanged(pane: pane)
+
+    @guidance
+        -- Reads from rendered_changes, the last SUCCESSFUL query, and not from
+        -- a fresh one. Two consequences, both wanted: the key acts on exactly
+        -- the tree the user is looking at, and it still works while git is
+        -- failing and the pane is showing its last good tree.
+        --
+        -- Every changed file, with no cap on how many. The per-file byte cap
+        -- (config.agent_tree_diff_max_bytes) is what bounds the cost, and it
+        -- bounds it per file whether one file was opened or four hundred were.
+        -- A separate "too many files" refusal here would only move the same
+        -- limit somewhere the user cannot see it coming.
+}
+
+rule CloseAllAgentTreeFileDiffs {
+    -- The same key, pressed while ANYTHING is open: close everything. Not
+    -- "close what I opened with this key" — the two directions are decided by
+    -- whether the set is empty, so one press always empties a non-empty set
+    -- however it got filled.
+    when: ToggleAllAgentTreeFileDiffs(user, pane)
+
+    requires: not pane.open_diff_paths.is_empty()
+
+    ensures: pane.open_diff_paths = []
+    ensures: AgentTreeDiffOpenSetChanged(pane: pane)
+}
+
+rule SplitAgentTreeDiffPane {
+    -- The open set changed to something non-empty and there is no pane to show
+    -- it in: split one beneath the tree.
+    when: AgentTreeDiffOpenSetChanged(pane)
+
+    requires: not pane.open_diff_paths.is_empty()
+    requires: pane.diff_pane = null
+
+    ensures: pane.diff_pane = core/TmuxPane.created()
     ensures: pane.error_notice = null
 
     @guidance
         -- == Geometry ==
-        -- The pane spans the full window WIDTH and takes
-        -- config.agent_tree_editor_pane_percent of its height, below both the
-        -- tree and the agent's own pane. Spanning the window rather than
-        -- subdividing the pane it was split from is what makes the geometry
-        -- independent of which pane the split targeted — the tree pane is the
-        -- natural target and it is the narrow one.
+        -- The pane subdivides the COMPANION PANE'S column, taking
+        -- config.agent_tree_diff_pane_percent of its height beneath the tree.
+        -- It deliberately does NOT span the window: the agent's own pane keeps
+        -- every column it had, so opening a diff never takes room from the
+        -- thing the user is supervising. This is the one geometric difference
+        -- from the editor pane this replaced, and it is the reason the split
+        -- targets the tree pane rather than the window.
         --
         -- == Focus does not move ==
-        -- The interaction this is designed for is browsing: move the cursor,
-        -- open a file, move on, open the next. So the keystroke that opens a
-        -- file leaves tmux focus in the tree pane, and reaching the editor to
-        -- type in it is a deliberate second act (the tmux prefix plus a
-        -- direction). This is the one place this module's pane behaviour differs
-        -- in KIND from the board's split pane rather than in degree.
+        -- The keystroke that opens a diff leaves tmux focus in the tree, so
+        -- browsing stays a one-handed loop: move the cursor, open, move on.
+        -- Reaching the diff to scroll it is a deliberate second act — the tmux
+        -- prefix plus a direction, tmux's own pane navigation and nothing this
+        -- spec invents. That is also why the diff pane needs no focus
+        -- indicator of its own: tmux already draws one.
         --
-        -- == Which editor ==
-        -- Resolved by the shared rule stated with core/config.editor_fallback:
-        -- VISUAL, else EDITOR, else that fallback; a value that is absent,
-        -- empty or only whitespace counts as unset; the value is split into
-        -- argv and executed directly with no shell. This surface adds nothing
-        -- to that rule — it is the same resolution the pop-out task and epic
-        -- editors use, so one $EDITOR means one thing everywhere.
+        -- == Why this is a rule and not an ensures on the four toggles ==
+        -- A user can kill the diff pane themselves, with tmux or by pressing
+        -- the exit key inside it, while the open set is still non-empty
+        -- (ExitAgentTreeDiffRenderer). Routing every set change through this
+        -- one rule is what makes the next toggle bring the pane back rather
+        -- than leaving the user with a set of open files and nowhere to see
+        -- them. The repair is deliberately NOT on the refresh tick: a pane the
+        -- user closed a second ago must stay closed until they ask again.
         --
-        -- What IS specific here: the file is passed as an absolute path and the
-        -- pane starts in pane.root, so a relative path would resolve anyway;
-        -- absolute is what makes that not matter.
-        --
-        -- A GUI editor that forks on launch returns immediately, so its pane
-        -- closes while its window stays open. That is the correct outcome and
-        -- needs no special handling.
-        --
-        -- == Not a violation of ReadOnlyObservation ==
-        -- The renderer still writes nothing. It launches a process that CAN
-        -- write, at the user's explicit keypress — see the amended guarantee on
-        -- AgentTreeCompanionPane.
+        -- One consequence is accepted and slightly odd: pressing Space to
+        -- CLOSE one file, while the pane is gone and other files remain open,
+        -- re-splits it. The alternative is to distinguish opening presses from
+        -- closing ones here, which buys consistency in a case the user reaches
+        -- only after killing the pane by hand.
 }
 
-rule ReplaceAgentTreeEditorFile {
-    -- Space or Enter on a file node when an editor pane is already open: show
-    -- the new file THERE rather than opening a second pane.
-    when: OpenSelectedAgentTreeFile(user, pane, node)
+rule CloseAgentTreeDiffPaneWhenEmpty {
+    -- The last open file was closed: the pane has nothing to show, so it goes.
+    when: AgentTreeDiffOpenSetChanged(pane)
 
-    requires: node.kind = file
-    requires: pane.editor_pane != null
-    requires: node.badge != deleted
-    requires: file_exists(pane.root + "/" + node.path)
+    requires: pane.open_diff_paths.is_empty()
+    requires: pane.diff_pane != null
 
-    -- The pane itself survives, so there is no new TmuxPane to create and
-    -- nothing about the window's layout changes — only which file it shows.
-    ensures: pane.editor_file = node.path
-    ensures: pane.error_notice = null
+    ensures: pane.diff_pane = null
 
     @guidance
-        -- One editor pane per window, replaced in place. The alternative —
-        -- a pane per opened file — subdivides the window on every press and
-        -- leaves the user to clean up, which is the opposite of the browsing
-        -- interaction OpenAgentTreeFileInEditor is shaped around.
-        --
-        -- ACCEPTED COST: replacing kills whatever the pane was running, an
-        -- editor with unsaved changes included. This was chosen deliberately
-        -- over the two alternatives (stack a new pane; refuse and merely focus
-        -- the existing one) in exchange for a layout that does not degrade as
-        -- the user browses. It is a real hazard, not an oversight: a user
-        -- editing in that pane must move the buffer elsewhere before opening
-        -- another file from the tree.
-        --
-        -- Focus does not move here either, for the same reason as the open
-        -- rule — so a user who IS typing in the editor pane cannot trigger this
-        -- without first leaving it.
+        -- The pane's presence IS the answer to "is anything open", which is
+        -- what DiffPaneExistsWhenSomethingIsOpen states. Leaving an empty pane
+        -- behind would make the user close it a second time, by a second
+        -- mechanism, to get their rows back.
 }
 
-rule AgentTreeEditorOpenFailureIsVisible {
-    -- Opening a file can fail for reasons the user can neither see nor predict
-    -- from the tree: the file is gone, or tmux refused. Say so in the pane.
-    when: AgentTreeEditorOpenFailed(pane, reason)
+rule KillAgentTreeDiffPaneWithItsTree {
+    -- The tree pane went away — the global toggle hid it, or its renderer
+    -- exited. The diff pane goes with it, and the open set goes with them.
+    when: pane: AgentTreePane.status transitions_to hidden
+
+    ensures: pane.diff_pane = null
+    ensures: pane.open_diff_paths = []
+
+    @guidance
+        -- A diff pane outliving its tree is orphaned: nothing drives its open
+        -- set, nothing refreshes it, and the toggle that would bring the tree
+        -- back does not act on it. So hiding takes both.
+        --
+        -- The open set is cleared rather than kept, which makes showing the
+        -- tree again give a bare tree and no diff pane. That is the same
+        -- treatment the cursor position and the manual expansion state already
+        -- get (see the pane surface's guidance): view state does not survive a
+        -- restart of the renderer, and the open set is view state. Nothing is
+        -- lost that a keypress does not bring straight back, because the
+        -- diffs were never stored — they are re-derived from git.
+}
+
+rule AgentTreeDiffPaneFailureIsVisible {
+    -- Opening the diff pane can fail for reasons the user can neither see nor
+    -- predict from the tree: tmux refused the split, or the renderer cannot
+    -- tell which pane it is running in. Say so in the tree's border.
+    when: AgentTreeDiffPaneOpenFailed(pane, reason)
 
     ensures: pane.error_notice = reason
-    ensures: pane.notice_source = editor_open
+    ensures: pane.notice_source = diff_open
     ensures: pane.status = shown
 
     @guidance
@@ -987,55 +1203,87 @@ rule AgentTreeEditorOpenFailureIsVisible {
         -- border to say it in. It is also logged, because the pane's copy is
         -- gone by the next keypress (see ClearAgentTreeErrorNotice).
         --
-        -- The renderer keeps running: an editor that cannot be opened must not
-        -- take the tree with it. pane.status = shown above is that guarantee,
-        -- not a state change.
+        -- The renderer keeps running: a diff pane that cannot be opened must
+        -- not take the tree with it. pane.status = shown above is that
+        -- guarantee, not a state change.
         --
-        -- Covers four failures with one rule because they are one event to the
-        -- user: the selected node is badged deleted (see NoEditorForDeletedNode),
-        -- the selected path does not lie inside pane.root, the renderer cannot
-        -- identify the pane it is running in (it was started outside tmux), and
-        -- the tmux split or replace itself failed. The file-is-gone case that
-        -- used to head this list is now the first of them, and it is no longer a
-        -- surprise: a deleted file is badged as deleted before the user presses
-        -- anything.
+        -- Two failures, not the four its predecessor covered. The deleted-file
+        -- refusal and the file-is-gone case are gone with the editor, because a
+        -- diff needs no file on disk; the out-of-root case is gone because no
+        -- path is handed to anything that resolves it — the diff pane is given
+        -- the task, and re-derives every path from git itself.
         --
-        -- The out-of-root case is unreachable through the surface as specified —
-        -- every node's path is built from segments below the root — and is
-        -- rejected anyway rather than trusted to stay that way, since the pane's
-        -- rooting at the worktree (TaskPaneRootIsTaskWorktree) is the whole
-        -- reason a path is relative in the first place.
+        -- The open set is left ALONE by a failed split. The user asked for a
+        -- file to be open and it is open; what failed is showing it. The next
+        -- toggle retries the split (SplitAgentTreeDiffPane) rather than
+        -- requiring the user to re-open everything.
 }
 
-rule RefuseToOpenDeletedAgentTreeFile {
-    -- Space or Enter on a node the tree has badged deleted. There is no file to
-    -- show, so no editor pane is opened or replaced — the pane says why instead.
-    when: OpenSelectedAgentTreeFile(user, pane, node)
+rule RefreshAgentTreeDiff {
+    -- The diff pane redraws on the same timer the tree does, asking git afresh
+    -- for the contents of whatever is currently open.
+    when: pane: AgentTreePane.last_diff_rendered_at + config.agent_tree_refresh_interval <= now
 
-    requires: node.kind = file
-    requires: node.badge = deleted
+    requires: pane.diff_pane != null
 
-    ensures: AgentTreeEditorOpenFailed(pane: pane, reason: deleted_file_reason(node.path))
+    ensures: pane.last_diff_rendered_at = now
+
+    ensures:
+        for path in pane.open_diff_paths:
+            AgentTreeFileDiffRendered(
+                pane: pane,
+                diff: FileDiff {
+                    path: path,
+                    -- Exactly one of these is non-null. Git either printed the
+                    -- change or said why it would not, and the pane shows
+                    -- whichever it got (see DiffBodyExcludesRefusal).
+                    body:    git_file_diff(pane.root, pane.task.base_branch, path).body,
+                    refusal: git_file_diff(pane.root, pane.task.base_branch, path).refusal
+                }
+            )
 
     @guidance
-        -- The complement of the node.badge != deleted guard on
-        -- OpenAgentTreeFileInEditor and ReplaceAgentTreeEditorFile: between the
-        -- three of them, every press of Space or Enter on a file node has
-        -- exactly one outcome, and none of them is silence.
+        -- == The same baseline, asked the same way ==
+        -- file_diff resolves the baseline exactly as AgentTreeGitQuery's step 1
+        -- does, and diffs the working tree against it exactly as step 2 does.
+        -- It has to: a diff taken against a different baseline than the badge
+        -- beside it would show the user two answers to one question. The
+        -- baseline is re-derived here rather than passed across from the tree,
+        -- because the two panes are separate processes and a value handed
+        -- between them is a value that can go stale.
         --
-        -- == Why not open it anyway ==
-        -- Most editors given a nonexistent path open an empty "new file"
-        -- buffer. That is actively misleading here: the user pressed Enter to
-        -- see what was in a file the agent deleted, and an empty buffer looks
-        -- like an answer. Worse, saving it would recreate the file — a write to
-        -- the worktree originating from a pane whose whole guarantee is that it
-        -- does not write to the worktree.
+        -- == Order ==
+        -- Diffs are rendered in the order the paths appear in the TREE, not in
+        -- the order the user opened them. The tree is the index the user reads
+        -- the pane through, so the two must scroll the same way.
         --
-        -- == The content is not lost, just not here ==
-        -- The deleted file's content is still in git, and reading it back is a
-        -- git operation, not a file open. Whether the pane should offer that
-        -- (showing the pre-deletion content, or the diff) is deliberately not
-        -- specified — see the ShowDeletedFileContent open question.
+        -- == Refusals ==
+        -- A file is rendered as a placeholder rather than as contents in
+        -- exactly three cases, and each is a DiffRefusal value carried on the
+        -- FileDiff rather than a notice on the tree: the path is untracked, so
+        -- git has nothing to diff; git reports it binary; or its diff exceeds
+        -- config.agent_tree_diff_max_bytes. A refusal is a fact about that one
+        -- file and must not cost the user the other diffs in the pane, which is
+        -- why it is not routed through error_notice.
+        --
+        -- == A path with nothing to show is not an error ==
+        -- The open set holds paths, and a path can stop being reported by git
+        -- between the press that opened it and this tick — the agent reverted
+        -- the file, or committed and reset. Such a path contributes no entry
+        -- and no placeholder. It is not pruned from the open set either: the
+        -- agent may change the file again, and the user did not ask for it to
+        -- be closed. See OpenDiffPathsMaySurviveTheirFiles.
+        --
+        -- == Failure is the tree's story, not the pane's ==
+        -- A git failure here leaves the last good diffs on screen, the same way
+        -- AgentTreeGitFailureKeepsLastGoodTree leaves the last good tree. The
+        -- two panes fail independently because they run independently.
+        --
+        -- == Black box ==
+        -- git_file_diff(root, base, path) resolves the baseline, takes the
+        -- working-tree diff of that one path against it, and returns either the
+        -- body or the DiffRefusal that stopped it — never both and never
+        -- neither.
 }
 
 rule ClearAgentTreeErrorNotice {
@@ -1064,9 +1312,10 @@ rule ClearAgentTreeErrorNotice {
 ------------------------------------------------------------
 --
 -- The node-scoped black boxes below (change_for_node,
--- has_changed_descendant_node) are the node-only counterparts of
--- RefreshAgentTree's change-set-scoped ones (change_for_path,
--- has_changed_descendant): an invariant is handed a rendered node, not the
+-- has_changed_descendant_node, is_tracked_node, sum_counts_below_node) are the
+-- node-only counterparts of RefreshAgentTree's change-set-scoped ones
+-- (change_for_path, has_changed_descendant, counts_for_path,
+-- sum_counts_below): an invariant is handed a rendered node, not the
 -- change set the refresh pass had in scope, so it re-derives the change for
 -- that node from its pane_root and path.
 
@@ -1079,33 +1328,97 @@ invariant OneCompanionPanePerAgentWindow {
             a != b implies a.window != b.window
 }
 
--- At most one editor pane per agent window, and never shared between windows.
--- A second would divide the window again on every open and leave the older one
--- unowned: nothing renders it, the toggle does not act on it, and only the pane
--- that opened it knows it is there.
+-- At most one diff pane per agent window, and never shared between windows.
+-- A second would divide the tree's column again on every open and leave the
+-- older one unowned: nothing refreshes it, nothing drives its open set, and
+-- only the tree that opened it knows it is there.
 --
--- Held by construction rather than enforced: an open reuses the pane it finds,
--- and finds it by a mark written immediately after the split — the editor value
--- of the same role marker the toggle reads (see HideAgentTreePane's "How the
--- companion pane is identified"), so one open cannot find the other pane. One
--- gap follows
--- from that and is accepted — if the mark cannot be written, the pane is already
--- open showing the file, so the open reports success and the NEXT open, finding
--- no mark, splits a second pane. Failing the open instead would report a
+-- Held by construction rather than enforced: SplitAgentTreeDiffPane only fires
+-- when pane.diff_pane is null, and the pane it creates is marked immediately
+-- after the split with the diff value of the same role marker the toggle reads
+-- (see HideAgentTreePane's "How the companion pane is identified"). One gap
+-- follows from that and is accepted, exactly as it was for the editor pane it
+-- replaces: if the mark cannot be written, the pane is already open and
+-- showing the diffs, so the split reports success and a later split, finding
+-- no mark, could make a second. Failing the open instead would report a
 -- failure that did not happen, over a bookkeeping write.
-invariant OneEditorPanePerAgentWindow {
+invariant OneDiffPanePerAgentWindow {
     for a in AgentTreePanes:
         for b in AgentTreePanes:
-            a != b implies (a.editor_pane = null or a.editor_pane != b.editor_pane)
+            a != b implies (a.diff_pane = null or a.diff_pane != b.diff_pane)
 }
 
--- The editor pane and the file it shows exist together or not at all: a pane
--- showing nothing is unreachable (every rule that opens one names a file), and
--- a remembered file with no pane would make ReplaceAgentTreeEditorFile fire
--- against a pane that is gone.
-invariant EditorFileAccompaniesEditorPane {
+-- The diff pane and a non-empty open set exist together or not at all. Both
+-- directions matter and each closes a different hole: a pane with nothing open
+-- is an empty frame the user has to dismiss by a second mechanism, and an open
+-- set with no pane is a set of files marked open in the tree with nowhere to
+-- read them.
+--
+-- The two rules that maintain it are complements on one trigger:
+-- SplitAgentTreeDiffPane covers non-empty-with-no-pane and
+-- CloseAgentTreeDiffPaneWhenEmpty covers empty-with-a-pane, so every change to
+-- the open set restores this within the same keypress.
+--
+-- The user killing the pane by hand breaks it, deliberately and briefly: it
+-- holds again at the next diff toggle, which is the behaviour
+-- SplitAgentTreeDiffPane's guidance argues for.
+invariant DiffPaneExistsWhenSomethingIsOpen {
     for p in AgentTreePanes:
-        (p.editor_pane = null) = (p.editor_file = null)
+        (p.diff_pane = null) = p.open_diff_paths.is_empty()
+}
+
+-- Only files ever have an open diff. A directory has no contents of its own —
+-- it is in the tree solely as a route to changed files — so Space and Enter on
+-- one toggle its expansion instead, and nothing can put its path in the open
+-- set.
+invariant OnlyFilesOpenDiffs {
+    for n in AgentTreeNodes:
+        n.diff_open implies n.kind = file
+}
+
+-- A row's open marker says exactly what the diff pane is showing. The tree is
+-- the index the user navigates the diff pane through, so a marker that
+-- disagreed with the pane would send them looking for a diff that is not
+-- there, or past one that is.
+invariant NodeDiffOpenMatchesOpenSet {
+    for p in AgentTreePanes:
+        for n in AgentTreeNodes:
+            (n.pane_root = p.root and n.kind = file)
+                implies n.diff_open = p.open_diff_paths.contains(n.path)
+}
+
+-- An untracked file never carries line counts, and it is the only kind of
+-- file that never can. This is not a display choice: a diff against the
+-- baseline cannot see a path that is not in the index, so there is no number
+-- to show and the pane declines to invent one. Showing "+0 -0" for a file the
+-- agent just wrote would be the single most misleading row the pane could
+-- draw.
+--
+-- The same fact reaches the diff pane as DiffRefusal.untracked, which is why
+-- the placeholder there repeats git's own advice to stage the file rather than
+-- reporting an error.
+invariant UntrackedFilesHaveNoLineCounts {
+    for n in AgentTreeNodes:
+        (n.kind = file and change_for_node(n) = added and not is_tracked_node(n))
+            implies n.counts = null
+}
+
+-- A directory's counts are the sum of the changed files beneath it, never
+-- anything else, and null only when nothing beneath it has counts at all.
+-- Skipping the null descendants rather than reading them as zero is what keeps
+-- a directory holding one modified file and three brand-new ones from
+-- under-reporting itself as the modified file alone plus a false zero.
+invariant DirectoryCountsSumDescendants {
+    for n in AgentTreeNodes:
+        n.kind = directory implies n.counts = sum_counts_below_node(n)
+}
+
+-- A rendered diff carries contents or a reason, never both and never neither.
+-- The pane always has something to draw for an open file, and the user is
+-- never left looking at a blank region wondering whether it is loading.
+invariant DiffBodyExcludesRefusal {
+    for d in FileDiffs:
+        (d.body = null) = (d.refusal != null)
 }
 
 -- A pane is always rooted at its task's worktree — never at the parent repo,
@@ -1151,17 +1464,6 @@ invariant OnlyFilesCarryBadges {
         n.kind = directory implies n.badge = null
 }
 
--- A node badged deleted never has an editor pane showing it. The guards on
--- OpenAgentTreeFileInEditor and ReplaceAgentTreeEditorFile hold this by
--- construction; stating it as an invariant is what makes the two guards one
--- rule rather than two coincidences.
-invariant NoEditorForDeletedNode {
-    for p in AgentTreePanes:
-        for n in AgentTreeNodes:
-            (n.pane_root = p.root and n.badge = deleted)
-                implies p.editor_file != n.path
-}
-
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -1177,7 +1479,7 @@ surface AgentTreeCompanionPane {
         pane.status
         pane.root
         pane.task
-        pane.editor_file
+        pane.open_diff_paths
         pane.error_notice
 
     provides:
@@ -1225,10 +1527,20 @@ surface AgentTreeCompanionPane {
         ExpandSelectedAgentTreeNode(user, pane)        -- l, Right
 
         -- Space and Enter dispatch on the selected node's kind, so the two
-        -- actions below never contend for them: a directory toggles, a file
-        -- opens. Toggle is therefore directory-only in the same way expand is.
-        ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter (directory)
-        OpenSelectedAgentTreeFile(user, pane, node)    -- Space, Enter (file)
+        -- actions below never contend for them: a directory toggles its
+        -- expansion, a file toggles its diff. Node expansion is therefore
+        -- directory-only in the same way expand is, and the diff toggle is
+        -- file-only in the same way (OnlyFilesOpenDiffs).
+        ToggleSelectedAgentTreeNode(user, pane)           -- Space, Enter (directory)
+        ToggleSelectedAgentTreeFileDiff(user, pane, node) -- Space, Enter (file)
+
+        -- The bulk form of the file toggle, on its own key. It does not
+        -- dispatch on the selection at all: it acts on the whole tree, whatever
+        -- the cursor happens to be on, a directory or nothing included.
+        -- Direction is decided by the set rather than by a remembered mode — a
+        -- non-empty set empties, an empty one fills — so one key always has one
+        -- meaning for the state the user can see.
+        ToggleAllAgentTreeFileDiffs(user, pane)           -- a
 
     @guarantee AgentTreeGgChordNeverExpires
         -- `gg` is a two-key chord, and unlike the board's `gg` (core.allium's
@@ -1382,13 +1694,19 @@ surface AgentTreeCompanionPane {
         -- index, and an agent's own git operations must never be disturbed by
         -- the pane observing them.
         --
-        -- OpenSelectedAgentTreeFile does not breach this, and the distinction is
-        -- worth stating precisely: the renderer launches an editor process in a
-        -- pane beside itself, at the user's explicit keypress. The renderer
-        -- writes nothing; the editor it hands the file to is the user's, and
-        -- what they do with it is theirs. What this guarantee still forbids —
-        -- the pane modifying the worktree, the task or the board of its own
-        -- accord — is unchanged.
+        -- Opening a diff does not breach this and cannot: the diff pane runs
+        -- the same read-only git commands this one does, in a pane beside it.
+        -- Nothing this feature added can write to the worktree at all, which is
+        -- a stronger position than the editor pane it replaced — that one
+        -- launched a process that COULD write, at the user's keypress, and
+        -- needed a carve-out stated here. The carve-out is gone with it.
+        --
+        -- One write does exist and it is outside the worktree: the tree records
+        -- its open set where the diff pane can read it. It goes in the
+        -- worktree's git administrative directory, which git never reports and
+        -- which `git worktree remove` deletes with the worktree, so it can
+        -- never appear in the tree, in a diff, or in anything the agent might
+        -- commit. See OpenSetIsNotWorktreeState.
 
     @guarantee NoBoardCoupling
         -- The pane is a separate process in a separate window from the board
@@ -1396,6 +1714,43 @@ surface AgentTreeCompanionPane {
         -- participate in the board's DB refresh cycle, and introduces no board
         -- input mode. The board's only involvement is owning the lifetime of
         -- the toggle keybinding.
+
+    @guarantee OpenSetIsNotWorktreeState
+        -- The set of files whose diffs are open is the user's, not the
+        -- repository's, and it is kept where the repository cannot see it: the
+        -- worktree's own git administrative directory. Three properties follow
+        -- and all three are required, not merely convenient.
+        --
+        --   * Git never reports it, so it cannot appear as an untracked file in
+        --     the very tree it drives, and the agent can never stage or commit
+        --     it.
+        --   * `git worktree remove` deletes it with the worktree, so the
+        --     teardown that already runs gains no fourth step and no new
+        --     failure mode. This is the same placement, chosen for the same
+        --     reasons, that the per-task MCP configuration already uses (see
+        --     tasks.allium's CallerIdentityConfigGoesWithTheWorktree).
+        --   * It is per worktree, so two agents' panes cannot read each
+        --     other's.
+        --
+        -- It is written by the tree and read by the diff pane, in that
+        -- direction only. The diff pane never writes it, which is what keeps
+        -- the tree the single place a toggle is decided even though two
+        -- processes can see the file.
+        --
+        -- It is not durable state and nothing reads it back after the tree
+        -- exits: KillAgentTreeDiffPaneWithItsTree empties the set, so a file
+        -- left behind by a killed renderer describes nothing.
+
+    @guarantee OpenDiffPathsMaySurviveTheirFiles
+        -- A path stays in the open set even when git stops reporting the file —
+        -- the agent reverted it, or committed and reset. It renders nothing
+        -- while that lasts, and starts rendering again by itself if the agent
+        -- changes the file once more.
+        --
+        -- Pruning it instead would mean the pane quietly un-asking a question
+        -- the user asked, and would make a file the agent is actively editing
+        -- flicker in and out of the open set on the AGENT's saves rather than
+        -- on the user's keypresses. Only the user closes what the user opened.
 
     @guidance
         -- The pane's initial state is shown, so an agent window opens with the
@@ -1408,6 +1763,97 @@ surface AgentTreeCompanionPane {
         -- this spec — see the AgentTreeViewState open question. What does survive
         -- a refresh is the manual expansion state within one renderer's life: a
         -- directory the user collapsed stays collapsed when new changes land.
+        --
+        -- The open set is view state of the same kind and gets the same
+        -- treatment: KillAgentTreeDiffPaneWithItsTree empties it when the tree
+        -- goes, so toggling the pane off and on gives a bare tree. It is
+        -- modelled in this spec, unlike the cursor, only because a second
+        -- process has to read it.
+}
+
+surface AgentTreeDiffPane {
+    facing user: User
+
+    -- One surface instance per diff pane. The user reading it is looking at
+    -- the pane beneath the tree, in the agent's own tmux window.
+    context pane: AgentTreePane
+
+    exposes:
+        pane.open_diff_paths
+        pane.root
+
+    provides:
+        -- Keys handled by the diff renderer itself, unprefixed, while the diff
+        -- pane has tmux focus. Deliberately the same vocabulary the tree uses
+        -- for the same motions, so moving between the two panes does not mean
+        -- changing keyboards. Every one but the exit key acts on the view.
+        ExitAgentTreeDiffRenderer(user, pane)               -- q, Ctrl-C
+        ScrollAgentTreeDiffUp(user, pane)                   -- k, Up
+        ScrollAgentTreeDiffDown(user, pane)                 -- j, Down
+        ScrollAgentTreeDiffHalfPageUp(user, pane)           -- Ctrl-U
+        ScrollAgentTreeDiffHalfPageDown(user, pane)         -- Ctrl-D
+        JumpAgentTreeDiffToTop(user, pane)                  -- gg
+        JumpAgentTreeDiffToBottom(user, pane)               -- G
+
+    @guarantee DiffPaneHasNoToggleOfItsOwn
+        -- The diff pane cannot open or close a file's diff. Space, Enter and
+        -- the all-files key do nothing here; the open set is decided in the
+        -- tree and only in the tree.
+        --
+        -- That is what makes one file the user is looking at have one open
+        -- state. Two places to toggle from would mean two writers to the open
+        -- set across two processes, and the tree's row markers could disagree
+        -- with the pane beneath them — which NodeDiffOpenMatchesOpenSet
+        -- forbids and this arrangement makes unreachable rather than merely
+        -- illegal.
+
+    @guarantee DiffPaneNavigationIsTmuxNavigation
+        -- Moving the cursor between the tree and the diff is tmux's own pane
+        -- navigation — the prefix and a direction — and this spec binds
+        -- nothing for it. Neither pane draws a focus indicator, because tmux
+        -- already draws the active pane's border differently, and neither
+        -- renderer needs to know whether it has focus.
+        --
+        -- This is why the diff went into a second pane rather than a second
+        -- region inside the tree's pane. A region would have needed a focus
+        -- model, a focus indicator, a key to move between the two, and a rule
+        -- for which region each existing motion key acted on. A pane needs
+        -- none of those, and it can be resized and zoomed with the tmux the
+        -- user already knows.
+
+    @guarantee DiffLinesTruncateRatherThanWrap
+        -- A diff line wider than the pane is cut at the pane's edge. It is not
+        -- wrapped, and the rest is not shown on a continuation row.
+        --
+        -- Wrapping is the tempting alternative and it is worse here, because
+        -- the pane is narrow by design (config.agent_tree_pane_percent): one
+        -- long line would wrap into many rows and push several files' diffs off
+        -- screen, so the cost of a single minified or generated line would be
+        -- paid by everything the user opened alongside it. Truncation costs
+        -- only the line it happens to. See the DiffPaneWidth open question.
+
+    @guarantee DiffPaneIsGitDerivedToo
+        -- Everything this pane shows comes from git, exactly as the tree's
+        -- badges do (AgentTreeIsGitDerived). It reads the open set to know
+        -- WHICH files to ask about, and nothing else: the paths come from the
+        -- tree, the contents never do. So the two panes cannot disagree about
+        -- what changed, and a diff cannot outlive the fact behind it — the next
+        -- tick asks again.
+        --
+        -- It writes nothing at all, not even the open set (see
+        -- DiffPaneHasNoToggleOfItsOwn), which makes it strictly more read-only
+        -- than the tree that spawned it.
+
+    @guidance
+        -- The pane scrolls as ONE document: every open file's diff, in tree
+        -- order, under its own path heading. It is not one scroll region per
+        -- file and there is no per-file cursor, so scrolling past the end of
+        -- one file reaches the top of the next without a keystroke in between.
+        --
+        -- Its scroll position lives in the renderer process and is not modelled
+        -- here, the same way the tree's cursor is not — see the
+        -- AgentTreeViewState open question, which covers both.
+
 }
 
 ------------------------------------------------------------
@@ -1416,6 +1862,6 @@ surface AgentTreeCompanionPane {
 
 open question "AgentTreeViewState: the renderer's cursor position and the set of directories the user has manually expanded or collapsed are real, observable state — CollapseSelectedAgentTreeNode and friends act on them, and DirectoryExpansionFollowsChangedDescendants only constrains the first render, not what the user does afterwards. They are currently modelled nowhere. Should AgentTreePane carry them as fields (making the manual-override behaviour rule-expressible and the invariant honest about when it applies), or is per-process view state deliberately below this spec's abstraction line?"
 
-open question "ShowDeletedFileContent: pressing Space or Enter on a node badged deleted is refused (RefuseToOpenDeletedAgentTreeFile), but the file's pre-deletion content is still in git and could be shown — as a read-only buffer of the base version, or as the deletion diff. Doing so would mean the pane can display content git holds but the worktree does not, which is a different capability from launching an editor on a path. Should the pane offer it, and if so through the same key or a separate one?"
+open question "DiffPaneWidth: the diff pane inherits the companion pane's column, which is config.agent_tree_pane_percent of the window — around forty columns on a typical terminal. Diff lines wider than that are truncated at the pane edge (AgentTreeDiffPane's DiffLinesTruncateRatherThanWrap), which is legible for most source but loses the right-hand side of long lines outright, with no way to reach it from inside the pane. Should the pane offer horizontal scrolling, should opening a diff widen the column, or is truncation plus the user's own tmux resize the intended answer?"
 
 open question "IgnoredFileChanges: git's ignore rules decide what the pane can see, so an agent writing to an ignored path (a build artefact, a scratch file, a local config) leaves no trace in the tree at all. That is usually right — an ignored file is ignored for a reason — but it does mean the pane cannot show an agent scribbling somewhere it should not. Is silent omission the intended behaviour, or should ignored changes be surfaced somewhere distinguishable?"

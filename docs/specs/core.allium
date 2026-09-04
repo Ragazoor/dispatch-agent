@@ -760,10 +760,14 @@ config {
     -- in it is expanded, globbed or word-split by a shell.
     --
     -- This governs EVERY surface that launches the user's editor: the pop-out
-    -- task and epic editors (tasks.allium: EditTask, epics.allium: EditEpic)
-    -- and the agent-tree editor pane (agent-tree.allium:
-    -- OpenAgentTreeFileInEditor). One user setting must not mean two things in
-    -- one application.
+    -- task and epic editors (tasks.allium: EditTask, epics.allium: EditEpic).
+    -- One user setting must not mean two things in one application.
+    --
+    -- The agent-tree companion pane used to be a third such surface, opening
+    -- the selected file in an editor pane beside itself. It no longer launches
+    -- an editor at all: the same keys now open the file's DIFF, which the pane
+    -- renders itself from git (agent-tree.allium: OpenAgentTreeFileDiff). So
+    -- nothing under agent-tree.allium reads this setting any more.
     editor_fallback: String = "vi"
 
     -- Staleness thresholds used by card age rendering and Staleness::from_age.

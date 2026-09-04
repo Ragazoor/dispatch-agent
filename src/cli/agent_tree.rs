@@ -33,8 +33,8 @@ use ratatui::{Frame, Terminal};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::agent_tree::{
-    build_tree, parse_name_status, parse_untracked, FileChange, GitFileChange, TreeNode,
-    TreeNodeKind,
+    attach_line_counts, build_tree, parse_name_status, parse_numstat, parse_untracked, FileChange,
+    GitFileChange, TreeNode, TreeNodeKind,
 };
 use crate::agent_tree_editor::{current_pane_from_env, open_in_editor};
 use crate::db::{Database, TaskRead};
@@ -56,13 +56,13 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// these run inline in this loop, so the timeout bounds how long this pane can
 /// ignore a keypress.
 ///
-/// The bound is PER COMMAND, and a tick runs up to five of them
-/// ([`git_changes`]), so the arithmetic worst case is five times this. Only two
-/// of the five can realistically reach it: `diff` and `ls-files` touch the
-/// index, and a lock the agent's own git holds is by far the commonest cause of
-/// a slow query. The three `merge-base` probes walk refs and objects only and
-/// take no lock, so the practical ceiling is unchanged by the baseline
-/// resolution.
+/// The bound is PER COMMAND, and a tick runs up to six of them
+/// ([`git_changes`]), so the arithmetic worst case is six times this. Only
+/// three of the six can realistically reach it: the two `diff`s and `ls-files`
+/// touch the index, and a lock the agent's own git holds is by far the
+/// commonest cause of a slow query. The three `merge-base` probes walk refs and
+/// objects only and take no lock, so the practical ceiling is unchanged by the
+/// baseline resolution.
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A one-line failure notice, tagged with which of the two writers set it.
@@ -97,23 +97,53 @@ impl Notice {
     }
 }
 
-fn node_label(node: &TreeNode) -> Line<'static> {
-    let (badge, style) = match node.badge {
-        None => return Line::from(Span::styled(node.name.clone(), Style::default().fg(FG))),
-        Some(FileChange::Added) => ("[Added]", Style::default().fg(GREEN)),
-        Some(FileChange::Modified) => (
-            "[Modified]",
-            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
-        ),
-        Some(FileChange::Deleted) => (
-            "[Deleted]",
-            Style::default().fg(RED).add_modifier(Modifier::BOLD),
-        ),
+/// The `+N -M` half of a row, or nothing when the node has no counts.
+///
+/// Absence is rendered as absence, never as `+0 -0`: a zero is a real answer
+/// for a tracked file that moved no lines (a permission change), and printing
+/// one for an untracked file — which git could not count at all — would read as
+/// "nothing changed in there" about a file the agent has just written. See the
+/// spec's `UntrackedFilesHaveNoLineCounts`.
+fn count_spans(node: &TreeNode) -> Vec<Span<'static>> {
+    let Some(counts) = node.counts else {
+        return Vec::new();
     };
-    Line::from(vec![
-        Span::raw(format!("{} ", node.name)),
-        Span::styled(badge, style),
-    ])
+    vec![
+        Span::raw(" "),
+        Span::styled(format!("+{}", counts.added), Style::default().fg(GREEN)),
+        Span::raw(" "),
+        Span::styled(format!("-{}", counts.removed), Style::default().fg(RED)),
+    ]
+}
+
+/// One rendered row: the name, then the badge if the node has one, then the
+/// line counts if it has any.
+///
+/// A directory reaches the counts too. It carries no badge — git says nothing
+/// about directories, and `OnlyFilesCarryBadges` holds that — but it does carry
+/// the sum over everything beneath it, which is what lets a collapsed directory
+/// say how much is inside without being opened.
+fn node_label(node: &TreeNode) -> Line<'static> {
+    let mut spans = vec![Span::styled(node.name.clone(), Style::default().fg(FG))];
+
+    if let Some(change) = node.badge {
+        let (badge, style) = match change {
+            FileChange::Added => ("[Added]", Style::default().fg(GREEN)),
+            FileChange::Modified => (
+                "[Modified]",
+                Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+            ),
+            FileChange::Deleted => (
+                "[Deleted]",
+                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+            ),
+        };
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(badge, style));
+    }
+
+    spans.extend(count_spans(node));
+    Line::from(spans)
 }
 
 fn node_to_item(node: &TreeNode, path: &mut Vec<String>) -> Option<TreeItem<'static, String>> {
@@ -278,8 +308,15 @@ fn fork_point(root: &str, base_branch: &str, runner: &dyn ProcessRunner) -> Resu
 ///      change against that baseline, committed or not, because the diff is
 ///      taken against the WORKING TREE. An agent that commits mid-session does
 ///      not watch its work vanish.
-///   3. `git ls-files --others --exclude-standard -z` — files the agent created
-///      and has not staged, which a diff cannot see. All of them are Added.
+///   3. `git diff --numstat --no-renames -z <fork point>` — how many lines
+///      each of those paths gained and lost. A separate ask against the same
+///      baseline and the same rename setting, not a richer form of step 2:
+///      drift between the two would leave a row's badge and its numbers
+///      answering different questions.
+///   4. `git ls-files --others --exclude-standard -z` — files the agent created
+///      and has not staged, which a diff cannot see. All of them are Added,
+///      and none of them carries counts — step 3 cannot see a path that is not
+///      in the index.
 ///
 /// Rename detection is off (`--no-renames`): with it on a rename is one entry
 /// naming two paths, which the three-value [`FileChange`] vocabulary cannot
@@ -292,8 +329,9 @@ fn fork_point(root: &str, base_branch: &str, runner: &dyn ProcessRunner) -> Resu
 /// `"src/\303\251.rs"` and render as that literal string. See
 /// [`parse_name_status`] for the full reasoning.
 ///
-/// A path both queries name (`git rm --cached foo`) is resolved by `build_tree`
-/// on precedence, not on the order these two run in.
+/// A path both path-listing queries name (`git rm --cached foo`) is resolved by
+/// `build_tree` on precedence, not on the order the two run in — and so are its
+/// counts, which the diff supplies and the untracked listing never does.
 ///
 /// Every command is read-only: nothing here fetches, commits, stages or writes
 /// to the index, which is what keeps the pane's `ReadOnlyObservation` guarantee
@@ -318,6 +356,21 @@ pub fn git_changes(
             &baseline,
         ],
     )?;
+    // The SAME baseline and the same rename setting as the diff above. The two
+    // are one comparison asked twice, and if they ever drifted apart a row's
+    // badge and its numbers would be answering different questions.
+    let numstat = run_git(
+        runner,
+        &[
+            "-C",
+            &root,
+            "diff",
+            "--numstat",
+            "--no-renames",
+            "-z",
+            &baseline,
+        ],
+    )?;
     let untracked = run_git(
         runner,
         &[
@@ -331,6 +384,10 @@ pub fn git_changes(
     )?;
 
     let mut changes = parse_name_status(&diff);
+    attach_line_counts(&mut changes, &parse_numstat(&numstat));
+    // Appended after the counts are attached, and deliberately: an untracked
+    // path is not in the index, so the numstat query never saw it and there is
+    // nothing to attach. See the spec's UntrackedFilesHaveNoLineCounts.
     changes.extend(parse_untracked(&untracked));
     Ok(changes)
 }
@@ -816,6 +873,7 @@ pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
 mod tests {
     use super::*;
     use crate::agent_tree::build_tree;
+    use crate::agent_tree::LineCounts;
     use std::path::PathBuf;
 
     fn root() -> PathBuf {
@@ -826,6 +884,7 @@ mod tests {
         GitFileChange {
             path: PathBuf::from(path),
             change,
+            counts: None,
         }
     }
 
@@ -977,6 +1036,83 @@ mod tests {
             .draw(|frame| render(frame, frame.area(), &tree, &mut state, title))
             .expect("draw");
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn counted(path: &str, change: FileChange, added: u32, removed: u32) -> GitFileChange {
+        GitFileChange {
+            path: PathBuf::from(path),
+            change,
+            counts: Some(LineCounts { added, removed }),
+        }
+    }
+
+    // ---- line counts on the rendered rows ---------------------------------
+
+    #[test]
+    fn a_file_row_shows_its_added_and_removed_line_counts() {
+        let out = render_to_string(
+            &[counted("a.rs", FileChange::Modified, 12, 3)],
+            "task",
+            60,
+            8,
+        );
+        assert!(out.contains("+12"), "expected +12 in:\n{out}");
+        assert!(out.contains("-3"), "expected -3 in:\n{out}");
+    }
+
+    /// A collapsed directory has to say how much is inside it, or the counts
+    /// are only useful once the user has already opened everything.
+    #[test]
+    fn a_directory_row_shows_the_sum_of_its_descendants() {
+        let out = render_to_string(
+            &[
+                counted("src/a.rs", FileChange::Modified, 12, 3),
+                counted("src/b.rs", FileChange::Added, 5, 1),
+            ],
+            "task",
+            60,
+            10,
+        );
+        assert!(out.contains("+17"), "expected summed +17 in:\n{out}");
+        assert!(out.contains("-4"), "expected summed -4 in:\n{out}");
+    }
+
+    /// An untracked file has no counts and must show none — not "+0 -0", which
+    /// would read as "nothing changed in there" about a file the agent just
+    /// wrote. See the spec's UntrackedFilesHaveNoLineCounts.
+    #[test]
+    fn an_untracked_file_row_shows_no_counts_at_all() {
+        let out = render_to_string(&[added("brand_new.rs")], "task", 60, 8);
+        assert!(out.contains("brand_new.rs"), "expected the row in:\n{out}");
+        assert!(!out.contains("+0"), "expected no +0 in:\n{out}");
+        assert!(!out.contains("-0"), "expected no -0 in:\n{out}");
+    }
+
+    /// Zero is a real answer for a TRACKED file — a permission-only change
+    /// moves no lines — and is shown, unlike the absent counts above.
+    #[test]
+    fn a_tracked_file_with_no_moved_lines_still_shows_zeroes() {
+        let out = render_to_string(
+            &[counted("mode.sh", FileChange::Modified, 0, 0)],
+            "task",
+            60,
+            8,
+        );
+        assert!(out.contains("+0"), "expected +0 in:\n{out}");
+    }
+
+    /// The badge still renders beside the counts. The two answer different
+    /// questions — what happened, and how much of it — and a row needs both.
+    #[test]
+    fn counts_render_alongside_the_badge_not_instead_of_it() {
+        let out = render_to_string(
+            &[counted("a.rs", FileChange::Modified, 2, 1)],
+            "task",
+            60,
+            8,
+        );
+        assert!(out.contains("[Modified]"), "expected the badge in:\n{out}");
+        assert!(out.contains("+2"), "expected the counts in:\n{out}");
     }
 
     /// A rendered companion pane: `TreeState`'s cursor movement resolves
@@ -1561,13 +1697,25 @@ mod tests {
         MockProcessRunner::ok_with_stdout(format!("{commit}\n").as_bytes())
     }
 
-    /// The diff and the untracked listing, in call order. `diff` alternates
-    /// status and path; `untracked` is bare paths.
-    fn changes_out(diff: &[&str], untracked: &[&str]) -> Vec<Result<std::process::Output>> {
+    /// The diff, its line counts, and the untracked listing, in call order.
+    /// `diff` alternates status and path; `numstat` holds whole
+    /// `added\tremoved\tpath` records; `untracked` is bare paths.
+    fn changes_out_counted(
+        diff: &[&str],
+        numstat: &[&str],
+        untracked: &[&str],
+    ) -> Vec<Result<std::process::Output>> {
         vec![
             MockProcessRunner::ok_with_stdout(nul(diff).as_bytes()),
+            MockProcessRunner::ok_with_stdout(nul(numstat).as_bytes()),
             MockProcessRunner::ok_with_stdout(nul(untracked).as_bytes()),
         ]
+    }
+
+    /// The common case: no line counts queued, so every path renders without
+    /// them. Rigs that care about counts use [`changes_out_counted`].
+    fn changes_out(diff: &[&str], untracked: &[&str]) -> Vec<Result<std::process::Output>> {
+        changes_out_counted(diff, &[], untracked)
     }
 
     /// The two fork-point probes answering `local` and `remote`, then the diff
@@ -1631,9 +1779,49 @@ mod tests {
                 "git -C /wt merge-base HEAD main".to_string(),
                 "git -C /wt merge-base HEAD origin/main".to_string(),
                 format!("git -C /wt diff --name-status --no-renames -z {LOCAL_FORK}"),
+                format!("git -C /wt diff --numstat --no-renames -z {LOCAL_FORK}"),
                 "git -C /wt ls-files --others --exclude-standard -z".to_string(),
             ]
         );
+    }
+
+    /// The counts query is a SEPARATE ask against the SAME baseline and the
+    /// same rename setting. If the two ever drifted apart, a row's badge and
+    /// its numbers would be answering different questions.
+    #[test]
+    fn git_changes_counts_lines_against_the_same_baseline_as_the_badges() {
+        let mut queued = vec![sha(LOCAL_FORK), sha(LOCAL_FORK)];
+        queued.extend(changes_out_counted(
+            &["M", "src/a.rs"],
+            &["12\t3\tsrc/a.rs"],
+            &[],
+        ));
+        let runner = MockProcessRunner::new(queued);
+
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+
+        assert_eq!(
+            changes[0].counts,
+            Some(LineCounts {
+                added: 12,
+                removed: 3
+            })
+        );
+    }
+
+    /// An untracked file is invisible to a diff against the index, so it comes
+    /// back with no counts however the query went. The pane must not fill that
+    /// hole with a zero — see the spec's UntrackedFilesHaveNoLineCounts.
+    #[test]
+    fn an_untracked_path_comes_back_with_no_line_counts() {
+        let mut queued = vec![sha(LOCAL_FORK), sha(LOCAL_FORK)];
+        queued.extend(changes_out_counted(&[], &[], &["brand_new.rs"]));
+        let runner = MockProcessRunner::new(queued);
+
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+
+        assert_eq!(changes, vec![added("brand_new.rs")]);
+        assert_eq!(changes[0].counts, None);
     }
 
     /// The bug this resolution exists for. A base branch the human has not
@@ -1818,7 +2006,7 @@ mod tests {
     fn every_git_query_is_bounded_by_a_timeout() {
         let runner = diverged_rig(true, &[]);
         git_changes(Path::new("/wt"), "main", &runner).expect("ok");
-        assert_eq!(runner.recorded_timeouts(), vec![Some(GIT_TIMEOUT); 5]);
+        assert_eq!(runner.recorded_timeouts(), vec![Some(GIT_TIMEOUT); 6]);
     }
 
     /// The diff is taken against the working tree, so a committed change is
