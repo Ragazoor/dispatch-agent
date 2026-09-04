@@ -235,6 +235,14 @@ entity AgentTreePane {
     -- matching anything and contributes no diff; it is not an error, and it is
     -- not pruned either (see OpenDiffPathsMaySurviveTheirFiles).
     --
+    -- Every path in it lies below pane.root. The tree can only put one there
+    -- that it rendered, and it renders none that escape (see changed_tree); the
+    -- diff pane checks again on the way in rather than trusting that, because
+    -- the two are separate processes reading a file either could have been
+    -- handed. A path that fails the check is dropped, not reported: it names
+    -- nothing the tree ever showed, so there is nothing to tell the user
+    -- about.
+    --
     -- Empty is the initial state and the resting state: emptying it is what
     -- closes the diff pane (see CloseAgentTreeDiffPaneWhenEmpty).
     open_diff_paths: [String]
@@ -1071,8 +1079,7 @@ rule OpenAllAgentTreeFileDiffs {
 
     requires: pane.open_diff_paths.is_empty()
 
-    ensures: pane.open_diff_paths =
-        pane.rendered_changes.map(c => c.path)
+    ensures: pane.open_diff_paths = changed_file_paths(pane.rendered_changes)
     ensures: AgentTreeDiffOpenSetChanged(pane: pane)
 
     @guidance
@@ -1080,6 +1087,15 @@ rule OpenAllAgentTreeFileDiffs {
         -- a fresh one. Two consequences, both wanted: the key acts on exactly
         -- the tree the user is looking at, and it still works while git is
         -- failing and the pane is showing its last good tree.
+        --
+        -- changed_file_paths is the paths of the tree's FILE nodes, not the raw
+        -- paths of the change set, and the difference is load-bearing in two
+        -- ways. Directories are excluded, because a directory has no contents
+        -- of its own to diff (OnlyFilesOpenDiffs). And a path the tree rejected
+        -- for escaping the root — which changed_tree drops and git never
+        -- produces — has no row, so it must not be openable either; taking the
+        -- change set directly would put a path in the open set that the user
+        -- can neither see nor close.
         --
         -- Every changed file, with no cap on how many. The per-file byte cap
         -- (config.agent_tree_diff_max_bytes) is what bounds the cost, and it
@@ -1273,6 +1289,25 @@ rule RefreshAgentTreeDiff {
         -- and no placeholder. It is not pruned from the open set either: the
         -- agent may change the file again, and the user did not ask for it to
         -- be closed. See OpenDiffPathsMaySurviveTheirFiles.
+        --
+        -- == Only re-read the diffs when the answer changes ==
+        -- Fetching every open file's contents is the expensive part, and the
+        -- tick would otherwise pay it once a second forever. So the pass first
+        -- asks for the open paths' line counts — one command git answers from
+        -- the index without materialising a patch — and re-reads the contents
+        -- only when that answer, or the open set itself, has moved since the
+        -- last pass. The steady-state cost of the poll is therefore two short
+        -- git processes however many files are open.
+        --
+        -- The same short-circuit RefreshAgentTree applies to its own query, and
+        -- it has the same one behavioural consequence worth stating: the user's
+        -- scroll position survives a tick precisely because nothing is rebuilt
+        -- on a no-change tick.
+        --
+        -- An untracked path never appears in that answer and does not need to:
+        -- its placeholder is the same whatever the file says. A path that
+        -- BECOMES tracked does change it, which is the transition that has to
+        -- be caught.
         --
         -- == Failure is the tree's story, not the pane's ==
         -- A git failure here leaves the last good diffs on screen, the same way
