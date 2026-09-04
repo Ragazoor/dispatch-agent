@@ -21,9 +21,11 @@
 #
 #   1. A real bug         -> fix it.
 #   2. A false positive   -> the code is right and the LOG LINE is wrong.
-#                            Demote it to INFO/DEBUG, or reword it. The record
-#                            stops being emitted, and the log's WARN level gets
-#                            more honest.
+#                            DEMOTE it to INFO/DEBUG: the record stops being
+#                            emitted and the log's WARN level gets more honest.
+#                            Rewording instead is NOT terminal — the message
+#                            head is the card's identity, so a reworded line
+#                            arrives as a new card to confirm and archive once.
 #   3. Real but transient -> upstream flakiness you still want logged.
 #                            ARCHIVE the card.
 #
@@ -43,6 +45,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration: edit log-warnings.conf in the same directory (SSOT), or set
 # these directly below as a fallback when that file is not present.
+#
+# CONFIGURE A COPY, NOT THE TRACKED FILE. Copy this script and its conf next to
+# your other live feed scripts (<data_dir>/scripts/, alongside repos.conf) and
+# edit the copy — editing the tracked pair in the repo leaves a permanent local
+# diff. The conf is sourced from whatever directory the script itself is in, so
+# the two travel together.
 #
 #   LOG_FILE  absolute path to the log to scan. Empty = this script is inert.
 #   REPO_URL  GitHub root URL of the repo the log belongs to. Dispatch resolves

@@ -254,8 +254,16 @@ does not name. See `AppendOnlyFeed` in `docs/specs/feeds.allium`.
 `scripts/fetch-log-warnings.sh` is the shipped example: it scans a
 tracing-formatted log and emits one card per **distinct** WARN/ERROR record,
 fingerprinted by module target plus the static head of the message. On a
-210k-line log that is 37 cards rather than 106k. Configure it in
-`scripts/log-warnings.conf`.
+210k-line log that is 37 cards rather than 106k.
+
+Like the other templates it ships **inert**, and you configure a COPY rather
+than the tracked file — editing `scripts/log-warnings.conf` in place would
+leave a permanent local diff on a tracked file. Copy the script and its conf
+next to your other live feed scripts (the existing ones run from
+`<data_dir>/scripts/`, alongside `repos.conf`), set `LOG_FILE` and `REPO_URL`
+in the copy, and point the epic's `feed_command` at the copy's absolute path.
+The script sources its conf from its own directory, so the pair travels
+together.
 
 ### Managed review & CVE feeds
 
