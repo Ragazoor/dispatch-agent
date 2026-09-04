@@ -1002,6 +1002,52 @@ mod epic_auto_dispatch_and_group_by_repo {
         assert!(!updated.group_by_repo);
         assert!(app.error_popup().is_none());
     }
+
+    /// Pressing R flips the board's own copy of the flag before asking the
+    /// write path, so a REFUSED write leaves the header asserting a state the
+    /// system does not allow — "append-only  group:on [R]". The refusal must
+    /// restore the header from the persisted epic, not merely report the error
+    /// (epics.allium: ToggleGroupByRepo, AppendOnlyEpicIndicator).
+    #[tokio::test]
+    async fn exec_toggle_epic_group_by_repo_reverts_the_header_when_refused() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Log Warnings", "desc", None)
+            .await
+            .unwrap();
+        rt.db_write()
+            .patch_epic(epic.id, &db::EpicPatch::new().feed_append_only(true))
+            .await
+            .unwrap();
+
+        // Mirror what the keypress does: flip the in-memory copy first.
+        let mut optimistic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        optimistic.group_by_repo = true;
+        app.update(Message::Epic(crate::tui::messages::EpicMessage::Refresh(
+            vec![optimistic],
+        )));
+
+        rt.exec_toggle_epic_group_by_repo(&mut app, epic.id, true)
+            .await;
+
+        assert!(
+            app.error_popup().is_some(),
+            "an append-only epic must refuse grouping"
+        );
+        let persisted = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(!persisted.group_by_repo, "the refusal must persist nothing");
+        let in_memory = app
+            .epics()
+            .iter()
+            .find(|e| e.id == epic.id)
+            .expect("epic must still be on the board");
+        assert!(
+            !in_memory.group_by_repo,
+            "the optimistic flip must be rolled back so the header stops \
+             claiming append-only + group:on"
+        );
+    }
 }
 
 mod epic_group_by_repo_migration {

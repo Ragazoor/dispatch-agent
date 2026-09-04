@@ -91,12 +91,7 @@ mod render_glue {
     /// a plain string so assertions can check substring presence/absence.
     fn top_row(app: &mut crate::tui::App, width: u16) -> String {
         let buf = render_to_buffer(app, width, 40);
-        let area = buf.area();
-        let mut line = String::new();
-        for x in area.left()..area.right() {
-            line.push_str(buf[(x, 0)].symbol());
-        }
-        line
+        crate::tui::tests::helpers::buffer_line(&buf, 0)
     }
 
     /// An app with two pre-existing top-row badges (`[1/2 repos]` from an
@@ -187,6 +182,14 @@ mod render_glue {
     /// gets — 68 codepoints of pre-existing badges, so `render_top_indicators`
     /// hands the budget span only `width - 69` (68 plus the emoji-undercount
     /// reserve).
+    ///
+    /// The `append-only` marker (epics.allium: AppendOnlyEpicIndicator) cannot
+    /// widen this. The write path refuses append-only together with grouping
+    /// or a feed role (epics.allium: UpdateEpicViaMcp), so the marker's widest
+    /// row is `manual dispatch [U]  append-only  group:off [R]  ` — 49
+    /// codepoints against the 50 this one spends on its three epic badges. A
+    /// refused `R` press can flash `append-only  group:on [R]` before the
+    /// rollback lands (ToggleGroupByRepo), and even that is only 48.
     fn epic_view_app_with_every_badge_and_budget() -> crate::tui::App {
         use crate::models::{EpicId, FeedRole};
         use crate::tui::types::{BoardSelection, ViewMode};

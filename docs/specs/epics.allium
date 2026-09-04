@@ -963,6 +963,17 @@ rule ToggleGroupByRepo {
         -- immediately for any epic (feed or non-feed) and reflected in the
         -- header indicator (green "group:on [R]" when true, muted
         -- "group:off [R]" when false).
+        --
+        -- EXCEPT when the write is REFUSED. The keypress flips the board's own
+        -- copy of the flag first and asks the write path second, so the header
+        -- redraws before the outcome is known. UpdateEpicViaMcp's requires
+        -- refuses grouping on an append-only epic, and that is a refusal a
+        -- user can reach by simply pressing R — the key is offered on every
+        -- epic. On refusal the header is restored from the persisted epic, not
+        -- merely accompanied by an error popup: otherwise the row would go on
+        -- claiming "append-only  group:on [R]", a pair the system does not
+        -- allow, until the next timed refresh happened to correct it. See
+        -- AppendOnlyEpicIndicator.
         -- The task migration (RegroupEpic / FlattenEpic) only runs for
         -- non-feed epics (feed_command = null):
         --   * turning ON  → RegroupEpic moves every non-archived task into
@@ -1400,8 +1411,101 @@ surface AutoDispatchFailureIndicator {
         -- surface is where "the chain tried and failed" lives.
 }
 
+surface AppendOnlyEpicIndicator {
+    facing user: User
+
+    -- What core/Epic.feed_append_only looks like on the epic header: the
+    -- literal text `append-only`, in green, in the top indicator row.
+    --
+    -- That row already answers "what kind of epic is this" -- auto or manual
+    -- dispatch (ToggleAutoDispatch), the feed routing role, repo grouping
+    -- (ToggleGroupByRepo). Append-only is the remaining answer of that kind,
+    -- and the one with the most visible consequence: such an epic's cards
+    -- never clear, because absence from an emission removes nothing
+    -- (feeds.allium: AppendOnlyFeed). Without a marker, a user looking at an
+    -- epic whose cards only ever accumulate has nothing on screen explaining
+    -- why.
+
+    context epic: core/Epic
+
+    -- Rendered only for an epic that has declared itself append-only.
+    let visible = epic.feed_append_only
+
+    exposes:
+        visible
+
+    @guarantee RenderedOnlyWhenTheFlagIsTrue
+        -- The marker exists only for an epic whose flag is true; there is
+        -- deliberately no `append:off` counterpart. This is the one place the
+        -- row is asymmetric -- the grouping indicator always shows both
+        -- states, "group:on [R]" and "group:off [R]" -- and the asymmetry is
+        -- the point: nearly every epic is a mirroring one, so a false-state
+        -- badge would be permanent clutter on the ordinary case in exchange
+        -- for saying nothing about it.
+
+    @guarantee NoKeyHintBecauseThereIsNoKey
+        -- The marker carries no bracketed key, unlike "auto dispatch [U]" and
+        -- "group:on [R]". In this row a bracket means "press this key to
+        -- toggle", so its absence is what tells the user this is a property to
+        -- read, not a control to press. That there is no keybinding for the
+        -- flag is itself deliberate: turning it OFF gives the next feed cycle
+        -- licence to remove every accumulated task the current emission does
+        -- not name, which for a log feed is potentially all of them. The flag
+        -- therefore belongs to wiring an epic up -- the MCP write path,
+        -- UpdateEpicViaMcp -- rather than to a one-key board toggle. See
+        -- feeds.allium: AppendOnlyFeed for the full argument.
+
+    @guarantee SitsBetweenTheRoleAndGroupingSlots
+        -- Position in the row: after the feed-role slot ("role:<role>", shown
+        -- when feed_role != none) and before the grouping slot. The settled
+        -- row is "manual dispatch [U]  append-only  group:off [R]", because
+        -- UpdateEpicViaMcp refuses append-only together with grouping or a
+        -- feed role and so neither neighbour's populated form is ever
+        -- PERSISTED alongside the marker.
+        --
+        -- Never persisted is not the same as never rendered: pressing R on an
+        -- append-only epic redraws the header before the refusal arrives. A
+        -- marker whose job is to explain an epic must not be the thing that
+        -- misleads about it, so that refusal restores the header rather than
+        -- only reporting the error -- see ToggleGroupByRepo, which owns the
+        -- mechanism and the argument for it.
+
+    @guarantee ShownWhateverTheFeedCommand
+        -- The flag is the only condition; there is no additional guard on
+        -- feed_command. An epic carrying the flag with no feed command is a
+        -- misconfiguration, and one the user is better off seeing than not --
+        -- the marker is the only place that combination becomes visible.
+
+    @guarantee EpicDetailViewOnly
+        -- Like every other indicator in this row it renders in the epic detail
+        -- view and never in board view (ViewMode::Board), which has no single
+        -- epic to describe.
+        --
+        -- "Epic detail view" here means ViewMode::Epic, whatever the
+        -- FLATTENED toggle is set to. Flattened is an orthogonal concept in
+        -- this spec set — core.allium's FlattenedView applies inside epic view
+        -- too, where it widens the scope to the epic's whole subtree — and it
+        -- does not change which epic the header describes. So a flattened
+        -- epic view still shows the marker, and only leaving for board view
+        -- takes it away.
+
+    @guarantee ReadOnlyWithNoTrigger
+        -- Purely a readout: rendering it changes no state, and there is no
+        -- trigger this surface responds to. The flag is written only by
+        -- UpdateEpicViaMcp and read only by the feed cycle
+        -- (feeds.allium: AppendOnlyFeed) and by this row.
+
+    @guidance
+        -- Rendered by src/tui/ui/shared.rs::render_top_indicators, the same
+        -- function that draws the dispatch-mode, feed-role and grouping slots,
+        -- so all four share one line and its width handling rather than
+        -- competing for space from separate call sites.
+}
+
 ------------------------------------------------------------
 -- Open Questions
 ------------------------------------------------------------
+
+open question "R is offered on every epic in the detail view, including an append-only one where UpdateEpicViaMcp guarantees the toggle will be refused. AppendOnlyEpicIndicator argues that a bracketed key in the header means 'press this to toggle', so advertising [R] there contradicts the row's own convention -- yet the flag it would refuse is exactly the one the append-only marker exists to explain. Should the keypress be guarded before it is attempted (no refusal, no rollback, but the service rule is then duplicated in the TUI), should [R] render differently on such an epic, or is refusing-then-restoring the honest behaviour to keep?"
 
 open question "Managed-epic role lookup keys on (feed_role, parent), so reparenting a managed epic makes the next ProvisionManagedEpics run create a duplicate epic for that role. Should the lookup fall back to feed_role alone, should managed epics be reparent-blocked the way repo-group sub-epics are, or is the duplicate an acceptable cost of a user moving them?"

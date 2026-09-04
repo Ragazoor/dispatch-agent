@@ -79,6 +79,14 @@ impl TuiRuntime {
     /// `spawn_refresh_epic` uses — not a direct `App.board` mutation, since only
     /// `crate::tui` code may touch that field (see docs/conventions.md
     /// "Visibility convention").
+    /// The error arm reports and stops; it deliberately does NOT roll back an
+    /// optimistic in-memory flip the way `exec_toggle_epic_group_by_repo` does.
+    /// That asymmetry is a reachability judgement, not an oversight: none of
+    /// `update_epic`'s validation refusals covers the fields routed through
+    /// here, so an error on this path means the DB itself failed — a state in
+    /// which the compensating read would very likely fail too. The moment a
+    /// validation rule starts refusing one of these fields, this arm needs the
+    /// same restore (epics.allium: ToggleGroupByRepo).
     async fn exec_patch_epic(
         &self,
         app: &mut App,
@@ -166,6 +174,32 @@ impl TuiRuntime {
                 app.update(Message::System(crate::tui::messages::SystemMessage::Error(
                     Self::db_error("toggling group by repo", e),
                 )));
+                // The keypress already flipped the board's own copy of the
+                // flag, so reporting the error is not enough: without this the
+                // header goes on asserting the value the write REFUSED — for
+                // an append-only epic, the impossible "append-only group:on"
+                // pair — until the next timed refresh. Restore it from the
+                // persisted epic (epics.allium: ToggleGroupByRepo).
+                //
+                // One epic, spliced — not the full `exec_refresh_epics_from_db`
+                // the SUCCESS arm ends with. That arm refreshes wholesale
+                // because regroup/flatten really did move tasks between
+                // epics; here the write was refused and nothing moved, so a
+                // whole-board replace would also stomp any OTHER epic's
+                // optimistic flip still queued behind this command.
+                match self.epic_svc.get_epic(id).await {
+                    Ok(persisted) => {
+                        app.update(Message::Epic(crate::tui::messages::EpicMessage::Updated(
+                            persisted,
+                        )));
+                    }
+                    // Nothing better to do than leave the flip standing: the
+                    // next timed refresh corrects it, and a second error
+                    // popup over the first would only bury the real one.
+                    Err(e) => {
+                        tracing::warn!("failed to restore epic {id:?} after refused toggle: {e}");
+                    }
+                }
                 return;
             }
         }

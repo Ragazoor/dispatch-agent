@@ -431,6 +431,21 @@ fn snapshot_group_indicator_on_non_feed_epic() {
 }
 
 #[test]
+fn snapshot_append_only_indicator_on_feed_epic() {
+    use super::super::types::Message;
+    let mut app = App::new(vec![]);
+    let mut epic = make_feed_epic(1, "Log Warnings", -2);
+    epic.feed_append_only = true;
+    let epic_id = epic.id;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        epic_id,
+    )));
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn snapshot_kanban_with_archive_focused() {
     use super::super::types::Message;
     use super::make_app_with_archived_task;

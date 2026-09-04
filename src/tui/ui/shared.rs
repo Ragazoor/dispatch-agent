@@ -296,6 +296,16 @@ pub(in crate::tui::ui) fn render_top_indicators(frame: &mut Frame, app: &App, ar
                 parts.push(Span::styled(role_label, Style::default().fg(MUTED)));
             }
 
+            // Append-only marker — read-only, and shown ONLY when set
+            // (epics.allium: AppendOnlyEpicIndicator). No bracketed key hint:
+            // a bracket here means "press this to toggle", and the OFF
+            // direction of this flag hands the next feed cycle licence to
+            // remove every accumulated task the emission does not name
+            // (feeds.allium: AppendOnlyFeed), so it is wiring, not a keypress.
+            if epic.feed_append_only {
+                parts.push(Span::styled("append-only  ", Style::default().fg(GREEN)));
+            }
+
             // Group-by-repo indicator — shown for all epics
             let (label, style) = if epic.group_by_repo {
                 ("group:on [R]  ", Style::default().fg(GREEN))

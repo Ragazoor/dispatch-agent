@@ -2149,7 +2149,9 @@ rule AppendOnlyFeed {
     -- one, which removes every accumulated task the current emission does not
     -- name — for a log feed, potentially all of them. That is the honest
     -- consequence of the flag meaning what it says, and it is why the flag
-    -- belongs to wiring an epic up rather than to a board keybinding.
+    -- belongs to wiring an epic up rather than to a board keybinding. The epic
+    -- header does still SURFACE the flag, read-only and with no key hint
+    -- precisely because there is no key (epics.allium: AppendOnlyEpicIndicator).
 
     -- NOT COMBINABLE WITH GROUPING OR A FEED ROLE. The grouped and
     -- role-routed paths gate their MIGRATION steps — deleting the parent's

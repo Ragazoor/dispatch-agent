@@ -2778,6 +2778,205 @@ fn epic_view_header_shows_group_indicator_for_non_feed_epic() {
     );
 }
 
+/// The append-only marker is asymmetric by design: it appears when the flag is
+/// set and renders NOTHING when it is clear, so ordinary epics are not
+/// cluttered with an `append:off` badge they can do nothing about
+/// (epics.allium: AppendOnlyEpicIndicator).
+#[test]
+fn epic_header_shows_append_only_marker_when_flag_set() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    // Assert on the indicator row itself, not the whole buffer: a needle this
+    // short could otherwise be satisfied by the hint bar.
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let row = buffer_line(&buf, 0);
+    assert!(
+        row.contains("append-only"),
+        "Expected 'append-only' in the epic header indicator row, got {row:?}"
+    );
+}
+
+#[test]
+fn epic_header_omits_append_only_marker_when_flag_clear() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = false;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        !buffer_contains(&buf, "append"),
+        "A mirroring epic must carry no append-only marker anywhere on screen"
+    );
+}
+
+/// No bracketed key hint, unlike `[U]` and `[R]`. A bracket in this row means
+/// "press this to toggle", and there is deliberately no keybinding for a flag
+/// whose OFF direction can delete every accumulated task (feeds.allium:
+/// AppendOnlyFeed).
+#[test]
+fn append_only_marker_carries_no_key_hint() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let row = buffer_line(&buf, 0);
+    let (_, after) = row.split_once("append-only").expect("marker must render");
+    assert!(
+        !after.trim_start().starts_with('['),
+        "append-only must not be followed by a key hint, got {row:?}"
+    );
+}
+
+#[test]
+fn append_only_marker_renders_before_the_group_indicator() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let row = buffer_line(&buf, 0);
+    let marker = row.find("append-only").expect("marker must render");
+    let group = row.find("group:").expect("group indicator must render");
+    assert!(
+        marker < group,
+        "append-only must sit left of the group indicator, got {row:?}"
+    );
+}
+
+/// The flag is settable on an epic with no feed command, and that combination is
+/// a misconfiguration the user is better off seeing than not — so the marker
+/// does not gate on `feed_command`.
+#[test]
+fn epic_header_shows_append_only_marker_on_non_feed_epic() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = None;
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let row = buffer_line(&buf, 0);
+    assert!(
+        row.contains("append-only"),
+        "Expected 'append-only' for a non-feed epic carrying the flag, got {row:?}"
+    );
+}
+
+/// Every indicator in this row is epic-view-only. Board view describes no
+/// single epic, so a set flag must not leak into it.
+#[test]
+fn append_only_marker_is_absent_from_board_view() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        !buffer_contains(&buf, "append"),
+        "Board view must carry no append-only marker"
+    );
+}
+
+/// FLATTENED is orthogonal to which view we are in (core.allium: FlattenedView
+/// applies inside epic view too, widening the scope to the subtree). It does
+/// not change which epic the header describes, so the marker survives it.
+#[test]
+fn append_only_marker_survives_a_flattened_epic_view() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+    app.board.flattened = true;
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let row = buffer_line(&buf, 0);
+    assert!(
+        row.contains("append-only"),
+        "Flattening an epic view must not drop the marker, got {row:?}"
+    );
+}
+
+/// The colour was a deliberate choice, not a default: green is this row's
+/// "feature is on" convention, and muted grey would read as "off".
+#[test]
+fn append_only_marker_is_green() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let style = find_style_of(&buf, "append-only").expect("marker must render");
+    assert_eq!(
+        style.fg,
+        Some(crate::tui::ui::palette::GREEN),
+        "append-only must render in GREEN, got {:?}",
+        style.fg
+    );
+}
+
+/// The other half of the ordering guarantee: the marker sits AFTER the
+/// feed-role slot. Only forcible on the struct — the write path refuses the
+/// pair — but worth pinning so a reorder cannot go unnoticed.
+#[test]
+fn append_only_marker_renders_after_the_role_indicator() {
+    use crate::models::FeedRole;
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(1);
+    epic.feed_command = Some("echo '[]'".to_string());
+    epic.feed_append_only = true;
+    epic.feed_role = FeedRole::MyReviews;
+    app.board.epics = vec![epic];
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
+        EpicId(1),
+    )));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let row = buffer_line(&buf, 0);
+    let role = row.find("role:").expect("role indicator must render");
+    let marker = row.find("append-only").expect("marker must render");
+    assert!(
+        role < marker,
+        "append-only must sit right of the role indicator, got {row:?}"
+    );
+}
+
 #[test]
 fn flat_view_emits_orphan_separator_between_epic_and_orphan_tasks() {
     use crate::models::EpicId;
