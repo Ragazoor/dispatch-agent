@@ -3,10 +3,10 @@ source: src/cli/agent_tree.rs
 expression: rendered
 ---
 ┌ dispatch ──────────────────────────────────────┐
-│  README.md [Deleted]                           │
+│    README.md [Deleted]                         │
 │▼ src                                           │
-│    lib.rs [Modified]                           │
-│    new.rs [Added]                              │
+│      lib.rs [Modified]                         │
+│      new.rs [Added]                            │
 │                                                │
 │                                                │
 │                                                │

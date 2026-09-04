@@ -13,7 +13,7 @@
 //! the question a scan was meant to approximate, which is what resolved the
 //! spec's old `TreeScanExclusions` question.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -36,9 +36,7 @@ use crate::agent_tree::{
     attach_line_counts, build_tree, parse_name_status, parse_numstat, parse_untracked, FileChange,
     GitFileChange, TreeNode, TreeNodeKind,
 };
-use crate::agent_tree_editor::{current_pane_from_env, open_in_editor};
 use crate::db::{Database, TaskRead};
-use crate::editor::editor_from_env;
 use crate::models::TaskId;
 use crate::process::{stderr_str, ProcessRunner, RealProcessRunner};
 use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
@@ -78,7 +76,10 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
     Git(String),
-    Editor(String),
+    /// A diff pane that could not be opened. The direct answer to a keypress
+    /// the user made moments ago, which is why a recovering git query must not
+    /// clear it — see [`RenderState::clear_git_notice`].
+    Diff(String),
 }
 
 impl Notice {
@@ -86,13 +87,13 @@ impl Notice {
         Self::Git(text.into())
     }
 
-    pub fn editor(text: impl Into<String>) -> Self {
-        Self::Editor(text.into())
+    pub fn diff(text: impl Into<String>) -> Self {
+        Self::Diff(text.into())
     }
 
     pub fn text(&self) -> &str {
         match self {
-            Self::Git(text) | Self::Editor(text) => text,
+            Self::Git(text) | Self::Diff(text) => text,
         }
     }
 }
@@ -123,8 +124,30 @@ fn count_spans(node: &TreeNode) -> Vec<Span<'static>> {
 /// about directories, and `OnlyFilesCarryBadges` holds that — but it does carry
 /// the sum over everything beneath it, which is what lets a collapsed directory
 /// say how much is inside without being opened.
-fn node_label(node: &TreeNode) -> Line<'static> {
-    let mut spans = vec![Span::styled(node.name.clone(), Style::default().fg(FG))];
+/// Marks a file whose diff is open in the pane below. Rendered for every FILE
+/// row, as the marker or as a blank of the same width, so the names stay in one
+/// column whatever is open — a marker that shifted its neighbours would make
+/// the set harder to read, not easier.
+///
+/// Directories never carry it: only files can be open (`OnlyFilesOpenDiffs`),
+/// and giving them the blank as well would indent them out of line with the
+/// files beneath them.
+const DIFF_OPEN_MARKER: &str = "\u{25cf} ";
+const DIFF_CLOSED_MARKER: &str = "  ";
+
+fn node_label(node: &TreeNode, diff_open: bool) -> Line<'static> {
+    let mut spans = Vec::new();
+    if node.kind == TreeNodeKind::File {
+        spans.push(Span::styled(
+            if diff_open {
+                DIFF_OPEN_MARKER
+            } else {
+                DIFF_CLOSED_MARKER
+            },
+            Style::default().fg(YELLOW),
+        ));
+    }
+    spans.push(Span::styled(node.name.clone(), Style::default().fg(FG)));
 
     if let Some(change) = node.badge {
         let (badge, style) = match change {
@@ -146,13 +169,20 @@ fn node_label(node: &TreeNode) -> Line<'static> {
     Line::from(spans)
 }
 
-fn node_to_item(node: &TreeNode, path: &mut Vec<String>) -> Option<TreeItem<'static, String>> {
+fn node_to_item(
+    node: &TreeNode,
+    path: &mut Vec<String>,
+    open_diffs: &BTreeSet<PathBuf>,
+) -> Option<TreeItem<'static, String>> {
     path.push(node.name.clone());
-    let label = node_label(node);
+    // `path` now names this node relative to the root, which is exactly the
+    // shape the open set holds — see `RenderState::open_diffs`.
+    let diff_open = open_diffs.contains(&path.iter().collect::<PathBuf>());
+    let label = node_label(node, diff_open);
     let item = match node.kind {
         TreeNodeKind::File => Some(TreeItem::new_leaf(node.name.clone(), label)),
         TreeNodeKind::Directory => {
-            let children = to_items(&node.children, path);
+            let children = to_items(&node.children, path, open_diffs);
             match TreeItem::new(node.name.clone(), label, children) {
                 Ok(item) => Some(item),
                 Err(e) => {
@@ -170,10 +200,14 @@ fn node_to_item(node: &TreeNode, path: &mut Vec<String>) -> Option<TreeItem<'sta
     item
 }
 
-fn to_items(children: &[TreeNode], path: &mut Vec<String>) -> Vec<TreeItem<'static, String>> {
+fn to_items(
+    children: &[TreeNode],
+    path: &mut Vec<String>,
+    open_diffs: &BTreeSet<PathBuf>,
+) -> Vec<TreeItem<'static, String>> {
     children
         .iter()
-        .filter_map(|node| node_to_item(node, path))
+        .filter_map(|node| node_to_item(node, path, open_diffs))
         .collect()
 }
 
@@ -188,8 +222,11 @@ fn to_items(children: &[TreeNode], path: &mut Vec<String>) -> Vec<TreeItem<'stat
 /// exactly what `RenderState::sync_expansion` walks with. The `path`
 /// accumulator survives only to give the duplicate-identifier warning
 /// somewhere useful to point.
-pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
-    to_items(&root.children, &mut Vec::new())
+pub fn build_tree_items(
+    root: &TreeNode,
+    open_diffs: &BTreeSet<PathBuf>,
+) -> Vec<TreeItem<'static, String>> {
+    to_items(&root.children, &mut Vec::new(), open_diffs)
 }
 
 /// The commit where this worktree forked from `git_ref`, or git's own error if
@@ -439,9 +476,24 @@ pub struct RenderState {
     auto_expanded: HashSet<Vec<String>>,
     /// A one-line failure notice, rendered in the pane's bottom border and
     /// cleared by the next key press. Two things set it: a failed git query
-    /// and a failed file open. While it is set the border is drawn red — see
-    /// `AgentTreeNoticeRedensBorder` in docs/specs/agent-tree.allium.
+    /// and a failed diff-pane split. While it is set the border is drawn red —
+    /// see `AgentTreeNoticeRedensBorder` in docs/specs/agent-tree.allium.
     pub notice: Option<Notice>,
+    /// Which files' diffs the user has opened, as paths relative to the pane
+    /// root.
+    ///
+    /// The only state here the user builds up rather than git supplying:
+    /// everything else the pane shows is re-derived from a git query every
+    /// tick. A set rather than a cursor, because the diff pane shows every open
+    /// file at once — which is what makes the all-files key a bulk version of
+    /// the single-file toggle rather than a second mode.
+    ///
+    /// It holds PATHS, not nodes, so it survives a refresh that rebuilds every
+    /// node. A path whose file git stops reporting simply stops matching
+    /// anything; it is not pruned, because the agent may change the file again
+    /// and the user did not ask for it to be closed. See
+    /// `OpenDiffPathsMaySurviveTheirFiles` in docs/specs/agent-tree.allium.
+    open_diffs: BTreeSet<PathBuf>,
     /// Whether a lone `g` is waiting for the second half of the `gg` chord.
     /// Unlike the board's chord this one carries no deadline, so there is no
     /// timestamp beside it — see `AgentTreeGgChordNeverExpires` in
@@ -460,6 +512,7 @@ impl RenderState {
             tree_state: TreeState::default(),
             auto_expanded: HashSet::new(),
             notice: None,
+            open_diffs: BTreeSet::new(),
             pending_g: false,
             viewport_rows: 0,
         }
@@ -477,6 +530,39 @@ impl RenderState {
     /// alone. Called after every SUCCESSFUL query: a working git retracts its
     /// own complaint, but must not swallow the answer to a keypress the user
     /// made moments ago (`RefreshAgentTree`'s clearing expression).
+    /// The paths whose diffs are open, in tree order — which is `BTreeSet`'s
+    /// own order, since a path sorts by its segments.
+    pub fn open_diffs(&self) -> &BTreeSet<PathBuf> {
+        &self.open_diffs
+    }
+
+    pub fn is_diff_open(&self, path: &Path) -> bool {
+        self.open_diffs.contains(path)
+    }
+
+    /// Open `path`'s diff if it is closed, close it if it is open.
+    fn toggle_diff(&mut self, path: PathBuf) {
+        if !self.open_diffs.remove(&path) {
+            self.open_diffs.insert(path);
+        }
+    }
+
+    /// Open every changed file's diff, or close everything if anything is
+    /// already open.
+    ///
+    /// Direction is decided by the set rather than by a remembered mode, so one
+    /// press always has one meaning for the state the user can see. The paths
+    /// come from the last rendered tree — the one the user is looking at —
+    /// which is also why the key still works while a notice is showing and the
+    /// pane is holding its last good answer.
+    fn toggle_all_diffs(&mut self, root: &TreeNode) {
+        if !self.open_diffs.is_empty() {
+            self.open_diffs.clear();
+            return;
+        }
+        self.open_diffs = collect_file_paths(root);
+    }
+
     fn clear_git_notice(&mut self) {
         if matches!(self.notice, Some(Notice::Git(_))) {
             self.notice = None;
@@ -527,7 +613,7 @@ pub fn render(
     state: &mut RenderState,
     title: &str,
 ) {
-    let items = build_tree_items(root);
+    let items = build_tree_items(root, &state.open_diffs);
     // The half-page motions are defined against the rows the user can actually
     // see, and this is the only place that number exists. Recorded on every
     // draw, so resizing the pane resizes the jump with no further plumbing.
@@ -576,10 +662,35 @@ pub enum KeyAction {
     Continue,
     /// Leave the loop, which exits the process and so closes the tmux pane.
     Exit,
-    /// Show this path — **relative to the pane root** — in the window's editor
-    /// pane. `handle_key` stays pure: resolving the absolute path, the editor and
-    /// the tmux calls all belong to the loop.
-    OpenInEditor(PathBuf),
+    /// The set of open diffs moved. The loop reconciles the diff pane with it —
+    /// splitting one when the set became non-empty and no pane exists, killing
+    /// it when the set emptied. `handle_key` stays pure: every tmux call
+    /// belongs to the loop.
+    DiffSetChanged,
+}
+
+/// Every FILE path in the tree, relative to the root, in tree order.
+///
+/// Directories contribute their descendants but never themselves: a directory
+/// has no contents of its own to diff, which is what `OnlyFilesOpenDiffs` in
+/// docs/specs/agent-tree.allium says.
+fn collect_file_paths(root: &TreeNode) -> BTreeSet<PathBuf> {
+    fn walk(node: &TreeNode, prefix: &mut PathBuf, out: &mut BTreeSet<PathBuf>) {
+        for child in &node.children {
+            prefix.push(&child.name);
+            match child.kind {
+                TreeNodeKind::File => {
+                    out.insert(prefix.clone());
+                }
+                TreeNodeKind::Directory => walk(child, prefix, out),
+            }
+            prefix.pop();
+        }
+    }
+
+    let mut out = BTreeSet::new();
+    walk(root, &mut PathBuf::new(), &mut out);
+    out
 }
 
 /// The node the widget's current selection names, if any. A selection path is
@@ -684,30 +795,32 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
         {
             state.tree_state.key_right();
         }
+        // The all-files key. Unlike Space/Enter it does NOT dispatch on the
+        // selection — it acts on the whole tree, whatever the cursor is on,
+        // including a directory or nothing at all.
+        KeyCode::Char('a') => {
+            state.toggle_all_diffs(root);
+            return KeyAction::DiffSetChanged;
+        }
         // Space/Enter dispatch on the selected node's kind — one resolution, both
         // arms — so an unselectable or stale selection reaches neither.
         KeyCode::Char(' ') | KeyCode::Enter => {
             let selected = state.tree_state.selected();
-            match selected_node(root, selected).map(|n| (n.kind, n.badge)) {
-                // A node badged Deleted names a file that is, by definition,
-                // not there. Refuse and say so rather than handing the editor a
-                // path it will open as an empty "new file" buffer — which looks
-                // like an answer, and which saving would recreate. See
-                // RefuseToOpenDeletedAgentTreeFile in
+            match selected_node(root, selected).map(|n| n.kind) {
+                // No badge guard, and deliberately none. The editor this
+                // replaced refused a node badged Deleted, because an editor
+                // given a missing path opens a misleading empty buffer. A diff
+                // has the opposite property: a deleted file's diff is exactly
+                // its former contents, so deleted is the case where opening it
+                // is most useful. See OpenAgentTreeFileDiff in
                 // docs/specs/agent-tree.allium.
-                Some((TreeNodeKind::File, Some(FileChange::Deleted))) => {
-                    let path: PathBuf = selected.iter().collect();
-                    state.notice = Some(Notice::editor(format!(
-                        "{}: deleted, nothing to open",
-                        path.display()
-                    )));
-                }
-                Some((TreeNodeKind::File, _)) => {
-                    return KeyAction::OpenInEditor(selected.iter().collect())
+                Some(TreeNodeKind::File) => {
+                    state.toggle_diff(selected.iter().collect());
+                    return KeyAction::DiffSetChanged;
                 }
                 // `toggle_selected` reports whether anything changed; the loop
                 // redraws unconditionally, so the answer is discarded.
-                Some((TreeNodeKind::Directory, _)) => {
+                Some(TreeNodeKind::Directory) => {
                     state.tree_state.toggle_selected();
                 }
                 None => {}
@@ -716,15 +829,6 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
         _ => {}
     }
     KeyAction::Continue
-}
-
-/// Resolve this pane and the user's editor, then show `relative` in the window's
-/// editor pane. Split out of the loop so its arm stays one branch and the message
-/// the notice shows is built in one place.
-fn open_selected(root: &Path, relative: &Path, runner: &dyn ProcessRunner) -> Result<()> {
-    let my_pane = current_pane_from_env()?;
-    let editor = editor_from_env();
-    open_in_editor(root, relative, &my_pane, &editor, runner)
 }
 
 fn run_loop<B: Backend>(
@@ -760,21 +864,7 @@ fn run_loop<B: Backend>(
             match handle_key(&mut state, &tree, key) {
                 KeyAction::Exit => return Ok(()),
                 KeyAction::Continue => {}
-                KeyAction::OpenInEditor(relative) => {
-                    // Every failure here is the user's to see: they pressed a key
-                    // and expect a file. The renderer keeps running regardless —
-                    // an editor that will not open must not take the tree with
-                    // it (docs/specs/agent-tree.allium:
-                    // AgentTreeEditorOpenFailureIsVisible).
-                    if let Err(e) = open_selected(root, &relative, runner) {
-                        tracing::warn!(
-                            path = %relative.display(),
-                            error = %e,
-                            "failed to open the selected file in an editor"
-                        );
-                        state.notice = Some(Notice::editor(e.to_string()));
-                    }
-                }
+                KeyAction::DiffSetChanged => {}
             }
             continue;
         }
@@ -903,14 +993,14 @@ mod tests {
     #[test]
     fn empty_tree_produces_no_items() {
         let tree = build_tree(&root(), &[]);
-        let items = build_tree_items(&tree);
+        let items = build_tree_items(&tree, &BTreeSet::new());
         assert!(items.is_empty());
     }
 
     #[test]
     fn changed_file_becomes_a_leaf_item_named_by_relative_path() {
         let tree = build_tree(&root(), &[modified("a.rs")]);
-        let items = build_tree_items(&tree);
+        let items = build_tree_items(&tree, &BTreeSet::new());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].identifier(), "a.rs");
         assert!(items[0].children().is_empty());
@@ -919,7 +1009,7 @@ mod tests {
     #[test]
     fn changed_dir_becomes_a_non_leaf_item() {
         let tree = build_tree(&root(), &[modified("src/a.rs")]);
-        let items = build_tree_items(&tree);
+        let items = build_tree_items(&tree, &BTreeSet::new());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].identifier(), "src");
         assert_eq!(items[0].children().len(), 1);
@@ -932,7 +1022,7 @@ mod tests {
     #[test]
     fn node_identifier_is_its_own_name_segment() {
         let tree = build_tree(&root(), &[modified("a/b/c.rs")]);
-        let items = build_tree_items(&tree);
+        let items = build_tree_items(&tree, &BTreeSet::new());
         let a = &items[0];
         assert_eq!(a.identifier(), "a");
         let b = &a.children()[0];
@@ -944,7 +1034,7 @@ mod tests {
     #[test]
     fn two_changed_roots_produce_two_top_level_items_sorted_by_name() {
         let tree = build_tree(&root(), &[modified("z.rs"), modified("a.rs")]);
-        let items = build_tree_items(&tree);
+        let items = build_tree_items(&tree, &BTreeSet::new());
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].identifier(), "a.rs");
         assert_eq!(items[1].identifier(), "z.rs");
@@ -1349,26 +1439,38 @@ mod tests {
         assert_eq!(rig.selected(), vec!["src".to_string()]);
     }
 
-    /// Space and Enter on a *file* ask the loop to open it. The action carries
-    /// the path relative to the pane root — `handle_key` stays pure, so joining
-    /// it to the worktree is the loop's job.
+    /// Space and Enter on a *file* open its diff. The action tells the loop
+    /// the set moved; `handle_key` stays pure, so splitting a pane and asking
+    /// git are the loop's job.
     #[test]
-    fn space_and_enter_on_a_file_ask_to_open_it_in_an_editor() {
+    fn space_and_enter_on_a_file_open_its_diff() {
         for code in [KeyCode::Char(' '), KeyCode::Enter] {
             let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Char('j'));
             assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
 
-            assert_eq!(
-                rig.press(code),
-                KeyAction::OpenInEditor(PathBuf::from("a.rs")),
-                "{code:?}"
-            );
+            assert_eq!(rig.press(code), KeyAction::DiffSetChanged, "{code:?}");
+            assert!(rig.state.is_diff_open(Path::new("a.rs")), "{code:?}");
+        }
+    }
+
+    /// The same key both ways — which is what makes it a toggle rather than an
+    /// open with a separate close to remember.
+    #[test]
+    fn space_and_enter_on_an_open_file_close_its_diff() {
+        for code in [KeyCode::Char(' '), KeyCode::Enter] {
+            let mut rig = KeyRig::new(&three_node_changes());
+            rig.press(KeyCode::Char('j'));
+            rig.press(code);
+            assert!(rig.state.is_diff_open(Path::new("a.rs")), "{code:?}");
+
+            assert_eq!(rig.press(code), KeyAction::DiffSetChanged, "{code:?}");
+            assert!(!rig.state.is_diff_open(Path::new("a.rs")), "{code:?}");
         }
     }
 
     #[test]
-    fn opening_a_nested_file_carries_its_whole_relative_path() {
+    fn opening_a_nested_file_records_its_whole_relative_path() {
         let mut rig = KeyRig::new(&three_node_changes());
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
@@ -1378,66 +1480,49 @@ mod tests {
             vec!["src".to_string(), "lib.rs".to_string()]
         );
 
-        assert_eq!(
-            rig.press(KeyCode::Enter),
-            KeyAction::OpenInEditor(PathBuf::from("src/lib.rs"))
-        );
+        assert_eq!(rig.press(KeyCode::Enter), KeyAction::DiffSetChanged);
+        assert!(rig.state.is_diff_open(Path::new("src/lib.rs")));
     }
 
-    /// A deleted file has nothing to open. The press is refused with a notice
-    /// rather than handing the editor a path it would open as an empty buffer —
-    /// see RefuseToOpenDeletedAgentTreeFile in docs/specs/agent-tree.allium.
+    /// The reversal from the editor this replaced, and the resolution of the
+    /// spec's old ShowDeletedFileContent question. An editor given a deleted
+    /// path opens a misleading empty buffer; a DIFF of a deleted file is
+    /// exactly its former contents, so the deleted case is the one where
+    /// opening it is most useful.
     #[test]
-    fn space_and_enter_on_a_deleted_file_refuse_with_a_notice() {
+    fn space_and_enter_on_a_deleted_file_open_its_diff_too() {
         for code in [KeyCode::Char(' '), KeyCode::Enter] {
             let mut rig = KeyRig::new(&[deleted("gone.rs")]);
             rig.press(KeyCode::Char('j'));
             assert_eq!(rig.selected(), vec!["gone.rs".to_string()], "{code:?}");
 
-            assert_eq!(rig.press(code), KeyAction::Continue, "{code:?}");
-            let notice = rig.state.notice.as_ref().expect("notice set");
-            assert!(
-                notice.text().contains("gone.rs") && notice.text().contains("deleted"),
-                "{code:?}: got {notice:?}"
-            );
+            assert_eq!(rig.press(code), KeyAction::DiffSetChanged, "{code:?}");
+            assert!(rig.state.is_diff_open(Path::new("gone.rs")), "{code:?}");
+            assert!(rig.state.notice.is_none(), "{code:?}: no refusal expected");
         }
     }
 
-    /// A nested deleted file names its whole relative path in the notice, so
-    /// the user can tell two same-named files apart.
+    /// Every badge opens. There is no per-badge guard left anywhere in this
+    /// path — see OpenAgentTreeFileDiff in docs/specs/agent-tree.allium.
     #[test]
-    fn refusing_a_nested_deleted_file_names_its_whole_path() {
-        let mut rig = KeyRig::new(&[deleted("src/old.rs")]);
-        rig.press(KeyCode::Char('j'));
-        rig.press(KeyCode::Char('j'));
-        assert_eq!(
-            rig.selected(),
-            vec!["src".to_string(), "old.rs".to_string()]
-        );
-
-        assert_eq!(rig.press(KeyCode::Enter), KeyAction::Continue);
-        let notice = rig.state.notice.as_ref().expect("notice set");
-        assert!(notice.text().contains("src/old.rs"), "got {notice:?}");
-    }
-
-    /// Added and Modified files still open — only Deleted is refused.
-    #[test]
-    fn added_and_modified_files_still_open() {
-        for change in [FileChange::Added, FileChange::Modified] {
+    fn every_badge_opens_a_diff() {
+        for change in [FileChange::Added, FileChange::Modified, FileChange::Deleted] {
             let mut rig = KeyRig::new(&[changed("a.rs", change)]);
             rig.press(KeyCode::Char('j'));
             assert_eq!(
                 rig.press(KeyCode::Enter),
-                KeyAction::OpenInEditor(PathBuf::from("a.rs")),
+                KeyAction::DiffSetChanged,
                 "{change:?}"
             );
+            assert!(rig.state.is_diff_open(Path::new("a.rs")), "{change:?}");
         }
     }
 
-    /// The directory behaviour is unchanged: Space/Enter still toggles, and must
-    /// not ask to open anything.
+    /// The directory behaviour is unchanged: Space/Enter still toggles
+    /// expansion, and must not put a directory in the open set. See
+    /// OnlyFilesOpenDiffs in docs/specs/agent-tree.allium.
     #[test]
-    fn space_on_a_directory_still_toggles_and_does_not_open() {
+    fn space_on_a_directory_toggles_expansion_and_opens_no_diff() {
         let mut rig = KeyRig::new(&three_node_changes());
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
@@ -1445,6 +1530,7 @@ mod tests {
 
         assert_eq!(rig.press(KeyCode::Char(' ')), KeyAction::Continue);
         assert!(!rig.is_open(&["src"]));
+        assert!(rig.state.open_diffs().is_empty());
     }
 
     #[test]
@@ -1452,6 +1538,141 @@ mod tests {
         let mut rig = KeyRig::new(&three_node_changes());
         assert!(rig.selected().is_empty());
         assert_eq!(rig.press(KeyCode::Char(' ')), KeyAction::Continue);
+        assert!(rig.state.open_diffs().is_empty());
+    }
+
+    // ---- the open marker on tree rows -------------------------------------
+
+    /// Render the tree with `state` as it stands, rather than fresh — the
+    /// marker is a function of the open set, which only a pressed key fills.
+    fn render_rig(rig: &mut KeyRig) -> String {
+        rig.draw();
+        buffer_to_string(rig.terminal.backend().buffer())
+    }
+
+    #[test]
+    fn an_open_files_row_carries_the_open_marker() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char(' '));
+
+        let out = render_rig(&mut rig);
+        assert!(
+            out.contains("\u{25cf} a.rs"),
+            "expected the marker on a.rs in:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_closed_files_row_carries_no_marker() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        let out = render_rig(&mut rig);
+        assert!(
+            !out.contains("\u{25cf}"),
+            "expected no marker anywhere in:\n{out}"
+        );
+    }
+
+    /// The marker follows the SET, so closing a file takes it away again —
+    /// which is what NodeDiffOpenMatchesOpenSet asks of the rendered row.
+    #[test]
+    fn closing_a_diff_removes_its_marker() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char(' '));
+        rig.press(KeyCode::Char(' '));
+
+        let out = render_rig(&mut rig);
+        assert!(!out.contains("\u{25cf}"), "expected no marker in:\n{out}");
+    }
+
+    /// A directory can never be open, so it never carries the marker OR the
+    /// blank that keeps file names in one column.
+    #[test]
+    fn a_directory_row_carries_no_marker_and_no_blank() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('a'));
+
+        let out = render_rig(&mut rig);
+        assert!(
+            !out.contains("\u{25cf} src"),
+            "a directory must not be marked; got:\n{out}"
+        );
+        assert!(
+            out.contains("\u{25cf} lib.rs"),
+            "its file child must be; got:\n{out}"
+        );
+    }
+
+    // ---- the all-files key ------------------------------------------------
+
+    #[test]
+    fn a_opens_every_changed_files_diff() {
+        let mut rig = KeyRig::new(&three_node_changes());
+
+        assert_eq!(rig.press(KeyCode::Char('a')), KeyAction::DiffSetChanged);
+
+        assert!(rig.state.is_diff_open(Path::new("a.rs")));
+        assert!(rig.state.is_diff_open(Path::new("src/lib.rs")));
+    }
+
+    /// Directories are routes to files, not things with contents, so `a` must
+    /// not put one in the set — see OnlyFilesOpenDiffs in the spec.
+    #[test]
+    fn a_opens_no_directories() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('a'));
+        assert!(!rig.state.is_diff_open(Path::new("src")));
+    }
+
+    /// Direction is decided by the SET, not by a remembered mode: one press
+    /// always empties a non-empty set, however it came to be non-empty.
+    #[test]
+    fn a_closes_everything_when_anything_is_open() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('a'));
+        assert!(!rig.state.open_diffs().is_empty());
+
+        assert_eq!(rig.press(KeyCode::Char('a')), KeyAction::DiffSetChanged);
+        assert!(rig.state.open_diffs().is_empty());
+    }
+
+    /// Even one file opened with Space is enough to make `a` mean "close",
+    /// because the set is what decides and the set is what the user can see.
+    #[test]
+    fn a_closes_a_set_that_space_filled() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char(' '));
+        assert_eq!(rig.state.open_diffs().len(), 1);
+
+        rig.press(KeyCode::Char('a'));
+        assert!(rig.state.open_diffs().is_empty());
+    }
+
+    /// `a` does not dispatch on the selection at all, so it works with the
+    /// cursor parked on a directory or on nothing.
+    #[test]
+    fn a_acts_on_the_whole_tree_whatever_the_cursor_is_on() {
+        let mut rig = KeyRig::new(&three_node_changes());
+        assert!(rig.selected().is_empty());
+        rig.press(KeyCode::Char('a'));
+        assert!(rig.state.is_diff_open(Path::new("src/lib.rs")));
+
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(rig.selected(), vec!["src".to_string()]);
+        rig.press(KeyCode::Char('a'));
+        assert!(rig.state.is_diff_open(Path::new("a.rs")));
+    }
+
+    /// On an empty tree there is nothing to open, and the press is harmless.
+    #[test]
+    fn a_on_an_empty_tree_opens_nothing() {
+        let mut rig = KeyRig::new(&[]);
+        assert_eq!(rig.press(KeyCode::Char('a')), KeyAction::DiffSetChanged);
+        assert!(rig.state.open_diffs().is_empty());
     }
 
     /// `l`/`Right` are expansion keys only — they must NOT have picked up the
@@ -1468,7 +1689,7 @@ mod tests {
     #[test]
     fn any_key_clears_a_pending_notice() {
         let mut rig = KeyRig::new(&three_node_changes());
-        rig.state.notice = Some(Notice::editor("src/gone.rs: no longer exists"));
+        rig.state.notice = Some(Notice::diff("could not split the diff pane"));
 
         rig.press(KeyCode::Char('j'));
 
@@ -2140,16 +2361,16 @@ mod tests {
     /// second ago. The two notices share one field and one line of border, so
     /// the source is what keeps them apart — see NoticeSource in the spec.
     #[test]
-    fn a_successful_git_query_leaves_an_editor_notice_alone() {
+    fn a_successful_git_query_leaves_a_diff_notice_alone() {
         let mut state = RenderState::new();
         let mut tree = build_tree(&root(), &[]);
-        state.notice = Some(Notice::editor("no editor configured"));
+        state.notice = Some(Notice::diff("could not split the diff pane"));
 
         let good = git_rig(&["M", "a.rs"], &[]);
         refresh(&root(), "main", &good, &mut tree, &mut state);
 
-        let notice = state.notice.as_ref().expect("editor notice must survive");
-        assert!(matches!(notice, Notice::Editor(_)), "got {notice:?}");
+        let notice = state.notice.as_ref().expect("diff notice must survive");
+        assert!(matches!(notice, Notice::Diff(_)), "got {notice:?}");
     }
 
     /// A revert un-badges the file with no bookkeeping: git stops reporting it,
@@ -2179,7 +2400,7 @@ mod tests {
         let tree = build_tree(&root(), &three_node_changes());
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
-        state.notice = Some(Notice::editor("src/gone.rs: no longer exists"));
+        state.notice = Some(Notice::diff("could not split the diff pane"));
         let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
         terminal
             .draw(|frame| render(frame, frame.area(), &tree, &mut state, "dispatch"))
@@ -2187,7 +2408,7 @@ mod tests {
         let rendered = buffer_to_string(terminal.backend().buffer());
 
         assert!(
-            rendered.contains("no longer exists"),
+            rendered.contains("could not split"),
             "the notice must be visible; rendered:\n{rendered}"
         );
         insta::assert_snapshot!(rendered);

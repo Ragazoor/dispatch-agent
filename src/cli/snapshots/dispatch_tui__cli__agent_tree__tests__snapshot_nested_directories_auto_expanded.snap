@@ -5,7 +5,7 @@ expression: rendered
 ┌ dispatch ──────────────────────────────────────┐
 │▼ a                                             │
 │  ▼ b                                           │
-│      c.rs [Modified]                           │
+│        c.rs [Modified]                         │
 │                                                │
 │                                                │
 │                                                │

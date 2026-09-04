@@ -3,14 +3,14 @@ source: src/cli/agent_tree.rs
 expression: rendered
 ---
 ┌ dispatch ──────────────────────────────────────┐
-│  a.rs [Added]                                  │
+│    a.rs [Added]                                │
 │▼ src                                           │
-│    lib.rs [Modified]                           │
-│  z.rs [Modified]                               │
+│      lib.rs [Modified]                         │
+│    z.rs [Modified]                             │
 │                                                │
 │                                                │
 │                                                │
 │                                                │
 │                                                │
 │                                                │
-└ src/gone.rs: no longer exists ─────────────────┘
+└ could not split the diff pane ─────────────────┘
