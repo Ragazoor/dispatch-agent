@@ -1062,13 +1062,18 @@ rule GroupedFeedUpsert {
     -- particular deletes and recreates tasks wholesale, so a feed task carrying
     -- an in-flight agent must not have its worktree left orphaned on disk.
     --
-    -- On an ADDITIVE cycle (DegradedNonEmptyEmission or AppendOnlyFeed) the present groups are
+    -- On an ADDITIVE cycle the present groups are
     -- still upserted, but BOTH clearing passes — absent sub-epics and the
     -- parent's flat tasks — are skipped, so nothing is removed and no
     -- TaskTeardown runs. Note that grouping migration is a clearing pass in
     -- disguise (it deletes flat tasks and recreates them under sub-epics), so
     -- an additive cycle also defers the migration to the next trusted
     -- emission rather than half-performing it.
+    -- Only ONE of the two causes of additivity reaches this rule:
+    -- DegradedNonEmptyEmission, for which deferring the migration is right.
+    -- AppendOnlyFeed cannot — a grouped epic may not be append-only
+    -- (AppendOnlyFeed), so there is no configuration in which the deferral
+    -- here is permanent.
 
     ensures:
         let groups = group_by(items, item => repo_name(item.url))
@@ -2153,25 +2158,63 @@ rule AppendOnlyFeed {
     -- header does still SURFACE the flag, read-only and with no key hint
     -- precisely because there is no key (epics.allium: AppendOnlyEpicIndicator).
 
-    -- NOT COMBINABLE WITH GROUPING OR A FEED ROLE. The grouped and
-    -- role-routed paths gate their MIGRATION steps — deleting the parent's
-    -- flat copies once the sub-epic copies stand alone — on the same
-    -- permission as their stale deletes, deferring them to "the next trusted
-    -- emission". For an epic that is additive by configuration that emission
-    -- never arrives, so the migration is deferred forever and the parent's
-    -- flat tasks and the sub-epic copies both persist, with no poll able to
-    -- converge them. That contradicts the from-any-starting-state convergence
-    -- the grouped and role-routed reconciles promise.
+    -- NOT COMBINABLE WITH GROUPING OR A FEED ROLE. An epic may be append-only
+    -- OR grouped/role-routed, never both, and the write path REFUSES the pair
+    -- (epics.allium: UpdateEpicViaMcp). This was first imposed as a
+    -- conservative guard against a migration deadlock, pending a decision on
+    -- whether the combination was wanted at all. THAT DECISION IS NOW MADE and
+    -- the answer is no: the restriction is permanent, and the reason is the
+    -- grouping KEY, not the sync machinery.
     --
-    -- So an epic may be append-only OR grouped/role-routed, never both, and
-    -- the write path REFUSES the pair rather than accepting it and corrupting
-    -- later (epics.allium: UpdateEpicViaMcp). The refusal is deliberately the
-    -- conservative resolution: it makes the bad state unreachable without
-    -- deciding what re-homing an ACCUMULATED task should mean, which is a real
-    -- open question. Splitting the two permissions apart — "may I delete
-    -- because absent" versus "do I trust this emission enough to migrate" —
-    -- is the change that would lift the restriction, and it needs that
-    -- question answered first.
+    -- REPO IS A MIRRORING FEED'S KEY. Every mirroring feed's item IS a
+    -- repo-scoped thing — a PR, a CVE, a Dependabot alert each belongs to
+    -- exactly one repo and carries that repo's URL as its own. group_by_repo
+    -- partitions such an emission along an axis its items already have.
+    --
+    -- AN EVENT FEED'S ITEMS ARE NOT KEYED BY REPO. They are keyed by where in
+    -- the code they fired. A log record's identity is its level, its emitting
+    -- module and its static message head; the record carries no URL at all.
+    -- The url such an item does carry is a single configured repo root, set
+    -- for one unrelated purpose: so dispatch can resolve a local clone and the
+    -- card can be dispatched into a worktree. Grouping by repo would therefore
+    -- partition EVERY item into one sub-epic named after that repo — or, with
+    -- no repo configured, into one named "other" (repo_name(url)'s fallback).
+    -- Grouping by a constant: a level of nesting and no information.
+    --
+    -- AND A MULTI-REPO EVENT FEED DOES NOT RESCUE IT. Given one epic scanning
+    -- several repos' logs, repo is the least useful of the axes those items
+    -- carry. Level and occurrence count are already a label and sort_order;
+    -- the module is the locus a fix lands in, and it is what such a board
+    -- wants grouped. group_by_repo is the only grouping key the runtime has.
+    -- So the want that would justify combining the two is not "group my log
+    -- feed by repo" but "group it by module" — a different feature, and one
+    -- nothing has asked for.
+    --
+    -- WHAT TO DO INSTEAD, at no cost in code: ONE FLAT APPEND-ONLY EPIC PER
+    -- REPO, all under a common parent. FeedTick schedules off a flat epic
+    -- list, so a feed epic nested under a parent is polled exactly like a root
+    -- one. That yields the same board shape and the same status rollup as
+    -- grouping would, and adds a per-repo cadence and a per-repo off switch
+    -- that a single grouped epic could not offer. This is the supported route,
+    -- and the refusal message points at it.
+    --
+    -- THE MIGRATION DEADLOCK WAS A SYMPTOM, NOT THE REASON. For the record,
+    -- because the earlier framing of it was wrong and should not be revived:
+    -- the grouped and role-routed paths gate their MIGRATION steps on the same
+    -- permission as their stale deletes, so an epic that is additive by
+    -- configuration would defer that migration forever. The former framing
+    -- called re-homing an accumulated task an undefined operation. It is not
+    -- undefined — FlatFeedReconcile's re-home and RoleRoutedFeedSync's move
+    -- both define it, identically, as a MOVE of the existing row. Only
+    -- GroupedFeedUpsert migrates by copying into the sub-epic and then
+    -- clearing the parent wholesale, and that is a defect of ITS OWN, harming
+    -- ordinary MIRRORING epics: the copy is a fresh row, so the migration
+    -- discards the original's status and hands its worktree and tmux window to
+    -- TaskTeardown. Fixing that is worth doing on its own merits and does NOT
+    -- reopen this question — the key argument above stands without it.
+    -- Consequently there is no reason to split SyncMode's single permission in
+    -- two ("may I delete because absent" versus "do I trust this emission
+    -- enough to migrate"); that proposal is retired.
 
     requires: epic.feed_append_only and exit_status = 0
               and (items.count > 0 or stderr = "")

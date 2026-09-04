@@ -342,19 +342,23 @@ impl EpicService {
         let epic_id = params.epic_id;
         let existing = self.db.get_epic(epic_id).await?;
 
-        // Append-only is PERMANENT additivity, and the grouped and role-routed
-        // paths gate their MIGRATION steps on the same removal permission as
-        // their stale deletes. Those steps defer to "the next trusted
-        // emission" — which, for an epic that is additive by configuration,
-        // never arrives. The parent's flat copies and the sub-epic copies
-        // would then both persist forever, with no poll able to heal the
-        // duplicate state the grouped design promises to converge out of.
+        // Repo is a MIRRORING feed's key: a PR, a CVE, a Dependabot alert each
+        // belongs to exactly one repo and carries that repo's URL as its own,
+        // so group_by_repo partitions the emission along an axis its items
+        // already have. An APPEND-ONLY feed's items are events keyed by where
+        // in the code they fired (a log record's level, module and message
+        // head), and the one url they carry is a configured repo root that
+        // exists only so dispatch can resolve a local clone. Grouping such an
+        // epic would put every item in a single sub-epic — grouping by a
+        // constant. Several repos' events are covered by one flat append-only
+        // epic per repo under a common parent, which FeedRunner polls exactly
+        // as it polls root epics.
         //
-        // Refusing the combination is deliberately the conservative fix: it
-        // makes the corrupting state unreachable without deciding what
-        // re-homing an ACCUMULATED task should mean, which is a real design
-        // question and not one to settle in a guard. Relaxing this later needs
-        // that answer first. See feeds.allium: AppendOnlyFeed.
+        // This restriction is PERMANENT (task #4640 decided it), not the
+        // conservative holding position it started as. In particular it does
+        // not hinge on the grouped path's migration deadlock — see
+        // feeds.allium: AppendOnlyFeed for why that was a symptom of a defect
+        // in GroupedFeedUpsert's own migration rather than the reason here.
         //
         // Evaluated against the POST-update values, so the pair is refused
         // whichever flag arrives second and whether they arrive together or
@@ -374,9 +378,11 @@ impl EpicService {
             if grouped || routed {
                 return Err(ServiceError::Validation(
                     "feed_append_only cannot be combined with group_by_repo or a feed role: \
-                     those paths only finish migrating tasks on a cycle that is allowed to \
-                     remove, which an append-only epic never has. Use a flat epic for an \
-                     append-only feed."
+                     grouping keys on the repo an item belongs to, but an append-only feed's \
+                     items are events keyed by where in the code they fired, and the one URL \
+                     they carry is a configured repo root — so every item would land in the \
+                     same sub-epic. To cover several repos, use one flat append-only epic per \
+                     repo under a common parent."
                         .to_string(),
                 ));
             }
@@ -846,13 +852,11 @@ mod tests {
         assert_eq!(cleared.feed_interval_secs, None);
     }
 
-    /// feeds.allium AppendOnlyFeed: append-only is permanent additivity, and
-    /// the grouped and role-routed paths gate their MIGRATION steps
-    /// (clear_parent_flat_tasks, clear_parent_stranded_tasks) on the same
-    /// removal permission. Those steps defer to "the next trusted emission",
-    /// which for an append-only epic never comes — so the parent's flat copies
-    /// and the sub-epic copies would both persist, permanently, with no poll
-    /// able to heal it. Refuse the combination rather than ship the corruption.
+    /// feeds.allium AppendOnlyFeed: grouping keys on the repo an item belongs
+    /// to, which is a MIRRORING feed's axis. An append-only feed's items are
+    /// events keyed by where in the code they fired, so grouping one would put
+    /// every item in a single sub-epic. Permanently refused; several repos are
+    /// covered by one flat append-only epic each under a common parent.
     #[tokio::test]
     async fn update_epic_refuses_append_only_together_with_group_by_repo() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());

@@ -500,15 +500,18 @@ rule UpdateEpicViaMcp {
         -- that setting it here flips the flag ONLY — no task migration is
         -- performed. See the guidance below.
         if group_by_repo != null: epic.group_by_repo = group_by_repo
-    -- An epic may be append-only OR grouped/role-routed, never both. The
-    -- grouped and role-routed paths only finish migrating tasks on a cycle
-    -- allowed to remove, which an append-only epic never has, so the pair
-    -- leaves duplicate parent and sub-epic tasks that no later poll can
-    -- converge. Refused here rather than corrupting later. Evaluated against
+    -- An epic may be append-only OR grouped/role-routed, never both, and the
+    -- restriction is permanent. Repo is a MIRRORING feed's key — its items are
+    -- repo-scoped things carrying their own repo's URL. An append-only feed's
+    -- items are events keyed by where in the code they fired, and the one url
+    -- they carry is a configured repo root that exists only to resolve a local
+    -- clone, so grouping would partition every item into a single sub-epic.
+    -- Grouping by a constant. The supported way to cover several repos is one
+    -- flat append-only epic per repo under a common parent. Evaluated against
     -- the POST-update values, so it catches the pair whichever flag arrives
     -- second and whether they arrive together or in separate calls; feed_role
     -- is not settable here, so it is read from the stored epic.
-    -- See feeds.allium: AppendOnlyFeed.
+    -- See feeds.allium: AppendOnlyFeed for the full argument.
     requires:
         let appends_only = feed_append_only ?? epic.feed_append_only
         let grouped = group_by_repo ?? epic.group_by_repo

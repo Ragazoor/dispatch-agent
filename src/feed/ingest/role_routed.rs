@@ -245,8 +245,9 @@ pub(super) async fn run_role_routed_feed_sync(
     // the sync may not act on omissions — an untrusted emission, or an epic that
     // never mirrors (feeds.allium: DegradedNonEmptyEmission, AppendOnlyFeed).
     // The latter cannot reach a reviews_parent epic: the service refuses
-    // feed_append_only on an epic carrying a feed role, precisely because
-    // phase 4 below is a migration that would then never run.
+    // feed_append_only on an epic carrying a feed role, because routing keys
+    // on a PR's repo and role, which an event feed's items do not have
+    // (feeds.allium: AppendOnlyFeed). So only the degraded cause is live here.
     let mut removed = upsert_role_groups(db, parent_id, routed.groups, mode).await;
     if mode.removes_absent() {
         removed.extend(delete_stale_subtree(db, parent_id, &roles, &routed.all_external_ids).await);

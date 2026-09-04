@@ -242,12 +242,20 @@ pub(super) async fn sync_grouped_feed(
     // stand alone — to the next trusted emission, rather than half-performing
     // it against a degraded one.
     //
-    // "The next trusted emission" is why an APPEND-ONLY epic may not be grouped
-    // and the service refuses the pair: append-only is additive permanently, so
-    // that next emission never comes and the migration would be deferred
-    // forever, leaving the parent's flat copies and the sub-epic copies both
-    // standing with no poll able to heal it. Only the degraded cause reaches
-    // this branch, and for it the deferral is exactly right.
+    // Only the DEGRADED cause reaches this branch, and for it the deferral is
+    // exactly right. The other cause of additivity cannot arrive here at all:
+    // the service refuses feed_append_only on a grouped epic, permanently,
+    // because repo is a mirroring feed's key and an append-only feed's items
+    // are events keyed by where in the code they fired (feeds.allium:
+    // AppendOnlyFeed).
+    //
+    // NOTE, and it is independent of append-only: phase 4 conflates a stale
+    // delete with the grouping MIGRATION, and as a migration it is wrong for
+    // MIRRORING epics too. Phase 2 inserts a fresh row into the sub-epic
+    // rather than moving the parent's, so migrating a task discards its status
+    // and hands its worktree and tmux window to teardown. The other two paths
+    // re-home by MOVING the row (`flatten_epic`, `apply_move`); this one
+    // should as well. See task #4647.
     let absent_ids = if mode.removes_absent() {
         let (absent_ids, absent_removed) =
             clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await;
