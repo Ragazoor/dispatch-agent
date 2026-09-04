@@ -478,7 +478,7 @@ pub(in crate::tui) fn caret_line(
 /// Budgets the value width from the total `area_width` minus the prefix and
 /// suffix, renders the caret line via [`caret_line`], and appends the suffix
 /// span. This is the shared skeleton for every active text-input row (the input
-/// popup rows, the status-bar todo/main-session rows, the todos overlay row).
+/// popup rows, the status-bar todo row, the todos overlay row).
 pub(in crate::tui) fn caret_field_line(
     area_width: u16,
     prefix: &str,

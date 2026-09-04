@@ -881,8 +881,8 @@ rule ResumeTask {
         -- on that name (select-window, send-keys, kill-window — all resolved
         -- by exact name, see TmuxWindowTargetedExactly) refused as ambiguous.
         --
-        -- A tmux query failure maps window_alive to false, not true: the safe
-        -- default is the one that reproduces the unconditional-create
+        -- A tmux query failure maps window_alive to false, not true: the
+        -- safe default is the one that reproduces the unconditional-create
         -- behaviour this rule always had before the check existed, rather
         -- than risking a task left with no live agent behind it.
         --
@@ -1132,9 +1132,10 @@ surface RepoPathPicker {
 
     @guidance
         -- This surface appears during task creation (InputRepoPath),
-        -- epic creation (InputEpicRepoPath), and quick dispatch
-        -- (QuickDispatch). It
-        -- replaces a plain text input with a fuzzy-filtered list of
+        -- quick dispatch (QuickDispatch), and base-branch selection
+        -- (InputBaseBranch, whose candidates are a per-repo branch
+        -- history rather than the global repo-path set). It replaces a
+        -- plain text input with a fuzzy-filtered list of
         -- previously-used repo paths. The filtered list is ordered by
         -- recency (most recent first). When the user has not typed
         -- anything, all saved paths are shown, letting them pick with
@@ -1926,8 +1927,8 @@ surface SandboxedAgentExecution {
 -- of them — killing the window, selecting it, renaming it, typing into it (the
 -- agent command, a resume `--continue`, a notification), reading its pane,
 -- joining it into the split pane, splitting a companion pane inside it, and
--- setting its @dispatch_dir option. It holds for the board window as much as
--- for a task's.
+-- setting its @dispatch_dir option. It holds for every named window — the
+-- board's own and the editor windows as much as a task's.
 --
 -- Not a cosmetic imprecision: window names are "task-" + task.id (see
 -- DispatchTask, DispatchResearchTask, ResumeTask, RetryResume), so one task's

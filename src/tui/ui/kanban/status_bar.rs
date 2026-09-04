@@ -277,7 +277,7 @@ fn archive_status_line() -> (Line<'static>, Style) {
 }
 
 /// Normal-mode status bar: the base action hints (batch / epic / task) with the
-/// active-mode badges (split, flat, active-filter, search, main-session) and the
+/// active-mode badges (split, flat, active-filter, search) and the
 /// open-todo count composed around them.
 fn normal_status_line(app: &App) -> (Line<'static>, Style) {
     let key_color = CYAN;

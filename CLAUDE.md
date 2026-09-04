@@ -148,7 +148,7 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 
 > **`#[cfg(test)]` gating**: test-only scaffolding is gated behind `#[cfg(test)]`, except `MockProcessRunner` in `src/process.rs` (plus `window_name_in_lookup` in `src/tmux.rs`, which exists solely to serve it) and `test_tmux_window` in `src/models/tmux_window.rs` — `tests/` targets depend on both and can't see `cfg(test)` items. Gated instead behind `#[cfg(any(test, feature = "test-support"))]`: the `test-support` cargo feature, off by default, turned on for `tests/` targets via a self dev-dependency in `Cargo.toml` (`dispatch-tui = { path = ".", features = ["test-support"] }`) so it stays out of the release binary.
 
-> **Timing constants**: tick interval, DB refresh, status TTL, PR poll, message flash, main-session poll, the gg-chord timeout, and the dispatch watchdog are documented in "Timing Constants" in `docs/reference.md`.
+> **Timing constants**: tick interval, DB refresh, status TTL, PR poll, message flash, the gg-chord timeout, and the dispatch watchdog are documented in "Timing Constants" in `docs/reference.md`.
 
 - [docs/testing.md](docs/testing.md) — running tests, snapshot workflow, where a new test goes, the no-sleep rule, coverage
 - [docs/architecture.md](docs/architecture.md) — Message→Command, ProcessRunner, command queue draining, editor session invariant, layout-cache coherence, render dirty flag, error handling, quick dispatch

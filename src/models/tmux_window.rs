@@ -46,7 +46,7 @@ pub(crate) const fn is_pane_id(s: &str) -> bool {
     true
 }
 
-/// A tmux window **name** — the board's own window, the main session's, or a
+/// A tmux window **name** — the board's own window, an editor window, or a
 /// dispatched agent's `task-<id>`.
 ///
 /// Exists as a type rather than a `String` because tmux resolves a bare
@@ -139,7 +139,7 @@ impl TmuxWindow {
     }
 
     /// The task this window belongs to, or `None` for any window that isn't a
-    /// task-agent window (the board's own TUI window, the main-session window,
+    /// task-agent window (the board's own TUI window, an editor window,
     /// anything else).
     pub fn task_id(&self) -> Option<TaskId> {
         self.0.strip_prefix(TASK_WINDOW_PREFIX)?.parse().ok()

@@ -2269,12 +2269,11 @@ value FlattenedView {
 --   nothing of its own to draw there.
 --
 --   Active: a mode whose form the panel itself draws (new task, new epic,
---   quick dispatch, retry confirmation, and so on) reserves enough rows
---   to show that form, bordered and titled for
---   the mode. Most such modes need a fixed number of rows; a mode that
---   lists repositories (quick dispatch, or the repo-path prompt with an
---   empty query) grows the panel to fit every
---   matching repo instead, up to the space the board can spare — the
+--   quick dispatch, retry confirmation, and so on) reserves enough rows to
+--   show that form, bordered and titled for the mode. Most such modes need
+--   a fixed number of rows; a mode that lists repositories (quick dispatch,
+--   or the repo-path prompt with an empty query) grows the panel to fit
+--   every matching repo instead, up to the space the board can spare — the
 --   kanban board never drops below a minimum height to make room for it.
 --
 --   Entering or leaving an input mode changes the panel's height

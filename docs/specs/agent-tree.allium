@@ -21,9 +21,8 @@
 --           next to the kanban board (see split-pane.allium — a different pane,
 --           in a different window, with a different lifecycle);
 --           agent-window creation itself (see dispatch.allium); repository
---           synchronisation and drift measurement,
---           which run their own git commands for a different purpose (see
---           repo-sync.allium).
+--           synchronisation and drift measurement, which run their own git
+--           commands for a different purpose (see repo-sync.allium).
 --
 -- GIT IS THE SOLE SOURCE OF TRUTH. The pane runs git against the worktree and
 -- renders what git reports; it stores nothing, remembers nothing between
@@ -378,6 +377,20 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- takes a REQUIRED task id (src/cli/agent_tree.rs), so there is no id to
         -- launch it with in the first place. Such a pane would also be covered
         -- by neither pane-teardown rule below, since both key off a Task.
+        --
+        -- This is now structural rather than test-enforced, and deliberately
+        -- so. It used to be asserted against real tmux, because dispatch had a
+        -- second window-creation path that launched an agent without a task
+        -- (the main session, since removed) and that path could have grown a
+        -- split by accident. With it gone, AgentLaunched is the only trigger
+        -- that creates a pane and it cannot fire without a Task, so a
+        -- real-tmux test would assert something no code path can reach. What
+        -- remains covered is the toggle: toggle_agent_tree_pane short-circuits
+        -- on a name that is not `task-<id>`, asserted at mock level by
+        -- toggle_agent_tree_pane_is_noop_for_non_task_window (src/dispatch/tests.rs)
+        -- and resync_agent_tree_pane_noop_for_non_task_window
+        -- (src/dispatch/agents.rs). A future third window-creation path that
+        -- launches an agent would put the real-tmux assertion back in scope.
 }
 
 rule HideAgentTreePane {
@@ -507,9 +520,9 @@ rule HideAgentTreePane {
         -- previously claimed: see "What this replaced" above.
         --
         -- A window name that doesn't parse as `task-<id>` (the inverse of
-        -- TmuxWindow::for_task — the board's own TUI window, anything else)
-        -- never reaches the
-        -- `exists pane` check at all: toggle_agent_tree_pane
+        -- TmuxWindow::for_task — the board's own TUI window, an editor
+        -- window, anything else) never reaches the `exists pane` check at
+        -- all: toggle_agent_tree_pane
         -- (src/dispatch/agents.rs) short-circuits to a no-op before issuing
         -- any tmux call, which stands in for "not exists pane" without a
         -- record to test.

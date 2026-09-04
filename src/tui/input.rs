@@ -503,7 +503,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_key_text_input(&mut self, key: KeyEvent) -> Vec<Command> {
-        // In picker modes (repo path, main-session dir, base branch), j/k
+        // In picker modes (repo path, quick dispatch, base branch), j/k
         // navigate the filtered candidate list.
         let is_picker_mode = self.picker_candidates().is_some();
         if is_picker_mode {

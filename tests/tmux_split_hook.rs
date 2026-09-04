@@ -343,7 +343,7 @@ fn split_correction_never_types_into_any_pane() {
     }
 }
 
-/// A window without `@dispatch_dir` (the board, the main session) must not
+/// A window without `@dispatch_dir` (the board, an editor window) must not
 /// trigger the hook at all — the `if-shell -F` guard covers this, and it is the
 /// property that keeps non-agent windows unaffected.
 #[test]

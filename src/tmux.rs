@@ -297,9 +297,9 @@ pub fn has_window(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Result<boo
 /// finds it, but also `true` when the query itself fails.
 ///
 /// A query failure (tmux not reachable, transient error) is deliberately
-/// mapped to "present" rather than "absent" — the callers of this helper use
-/// the result to decide whether to treat a task's agent as crashed or the
-/// main session as gone, and a false "absent" would trigger a spurious
+/// mapped to "present" rather than "absent" — the caller of this helper uses
+/// the result to decide whether to treat a task's agent as crashed, and a
+/// false "absent" would trigger a spurious
 /// re-dispatch or crash notification from a hiccup that has nothing to do
 /// with the window's actual state. See `has_window`'s other callers
 /// (`kill_window_if_present`) for the opposite default, which applies where
@@ -481,7 +481,7 @@ pub fn ensure_split_hook(runner: &dyn ProcessRunner) -> Result<()> {
 
 /// Read back a window's `@dispatch_dir` — the worktree path
 /// [`set_window_dispatch_dir`] stored on it. `None` when the option is unset,
-/// which is the normal answer for the board and the main session.
+/// which is the normal answer for the board and the editor windows.
 ///
 /// Lets the callers that hold only a window name (the agent-tree toggle and
 /// resync paths) name a start directory for a split, without threading the
@@ -1307,8 +1307,8 @@ mod tests {
 
     #[test]
     fn has_window_queries_across_all_sessions() {
-        // has_window is used for cross-session liveness checks (main session,
-        // cleanup, finish, editor, staleness) — without -a, list-windows scopes
+        // has_window is used for cross-session liveness checks (cleanup,
+        // finish, editor, staleness) — without -a, list-windows scopes
         // to the current/attached session only and misses windows living in
         // another session, producing a false "not found".
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"task-42\n")]);
