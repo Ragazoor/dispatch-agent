@@ -203,6 +203,7 @@ pub enum SubStatus {
     ChangesRequested,
     Approved,
     PrClosed,
+    PrUnreachable,
 }
 
 impl SubStatus {
@@ -218,15 +219,17 @@ impl SubStatus {
         SubStatus::ChangesRequested,
         SubStatus::Approved,
         SubStatus::PrClosed,
+        SubStatus::PrUnreachable,
     ];
 
     /// Sub-statuses advertised by the `update_task` MCP tool's schema.
     /// Excludes `stale_shell`: a system-derived activity classification (see
     /// `ClassifyAgentActivity`), not a value an agent should choose to set.
-    /// Excludes `pr_closed` for the same reason: it's derived from GitHub PR
-    /// polling (`PollPrStatus`), not a value an agent should set by hand.
-    /// Advertisement-only — the handler still accepts `stale_shell` or
-    /// `pr_closed` if a caller sends it anyway, same as any other
+    /// Excludes `pr_closed` and `pr_unreachable` for the same reason: both are
+    /// derived from GitHub PR polling (`PollPrStatus` / `PrPollGaveUp`), not
+    /// values an agent should set by hand.
+    /// Advertisement-only — the handler still accepts any of the three if a
+    /// caller sends it anyway, same as any other
     /// `SubStatus` valid for the effective status (mcp-task-tools.allium:
     /// `UpdateTaskViaMcp`). Kept as its own const (rather than a hand-written
     /// schema literal) so the advertised set can't silently drop a variant
@@ -263,6 +266,7 @@ impl SubStatus {
                     | SubStatus::Approved
                     | SubStatus::Conflict
                     | SubStatus::PrClosed
+                    | SubStatus::PrUnreachable
             ),
             TaskStatus::Done => matches!(self, SubStatus::None),
             TaskStatus::Archived => matches!(self, SubStatus::None),
@@ -301,6 +305,13 @@ impl SubStatus {
             SubStatus::PrClosed => SubStatusProperties {
                 priority: PRIORITY_PR_CLOSED,
                 header_label: "pr closed",
+            },
+            // Sorts below PrClosed and above ChangesRequested: an unreadable PR
+            // leaves the card's review state unknown, which needs the user more
+            // than a known outstanding task does.
+            SubStatus::PrUnreachable => SubStatusProperties {
+                priority: PRIORITY_PR_UNREACHABLE,
+                header_label: "pr unreachable",
             },
             SubStatus::Crashed => SubStatusProperties {
                 priority: PRIORITY_CRASHED,
@@ -364,6 +375,8 @@ const PRIORITY_URGENT: u8 = 0;
 // Running-only tiers below, but still gets its own number so it doesn't
 // silently share a header group with any of them).
 const PRIORITY_PR_CLOSED: u8 = 5;
+// Review-only, like PrClosed, and sorts directly below it.
+const PRIORITY_PR_UNREACHABLE: u8 = 7;
 const PRIORITY_CRASHED: u8 = 10;
 const PRIORITY_STALE: u8 = 20;
 const PRIORITY_NEEDS_INPUT: u8 = 30;
@@ -383,6 +396,7 @@ define_str_enum!(SubStatus, "sub-status" {
     ChangesRequested => "changes_requested",
     Approved => "approved",
     PrClosed => "pr_closed",
+    PrUnreachable => "pr_unreachable",
 });
 
 // ---------------------------------------------------------------------------
@@ -1830,6 +1844,58 @@ pub(in crate::models) mod model_tests {
             SubStatus::None.column_priority(),
             SubStatus::AwaitingReview.column_priority()
         );
+    }
+
+    /// `pr_unreachable` is a Review-only attention state, exactly like
+    /// `pr_closed` (core.allium: SubStatus).
+    #[test]
+    fn pr_unreachable_is_valid_only_for_review() {
+        assert!(SubStatus::PrUnreachable.is_valid_for(TaskStatus::Review));
+        for status in [
+            TaskStatus::Backlog,
+            TaskStatus::Running,
+            TaskStatus::Done,
+            TaskStatus::Archived,
+        ] {
+            assert!(
+                !SubStatus::PrUnreachable.is_valid_for(status),
+                "pr_unreachable must not be valid for {status:?}"
+            );
+        }
+    }
+
+    /// Sorts below `pr_closed` and above `changes_requested`: the card's review
+    /// state is not merely unfinished, it is unknown, which is worse than a
+    /// known task (core.allium: Review-column section order).
+    #[test]
+    fn pr_unreachable_sorts_between_pr_closed_and_changes_requested() {
+        assert!(
+            SubStatus::PrClosed.column_priority() < SubStatus::PrUnreachable.column_priority(),
+            "pr_closed should sort above pr_unreachable"
+        );
+        assert!(
+            SubStatus::PrUnreachable.column_priority()
+                < SubStatus::ChangesRequested.column_priority(),
+            "pr_unreachable should sort above changes_requested"
+        );
+    }
+
+    /// System-derived from PR polling, so the MCP tool must not offer it as a
+    /// value an agent can choose (mcp-task-tools.allium: UpdateTaskViaMcp).
+    #[test]
+    fn pr_unreachable_is_not_mcp_advertised() {
+        assert!(!SubStatus::MCP_ADVERTISED.contains(&SubStatus::PrUnreachable));
+        assert!(SubStatus::ALL.contains(&SubStatus::PrUnreachable));
+    }
+
+    #[test]
+    fn pr_unreachable_round_trips_as_snake_case() {
+        assert_eq!(SubStatus::PrUnreachable.as_str(), "pr_unreachable");
+        assert_eq!(
+            "pr_unreachable".parse::<SubStatus>().unwrap(),
+            SubStatus::PrUnreachable
+        );
+        assert_eq!(SubStatus::PrUnreachable.header_label(), "pr unreachable");
     }
 
     /// The Review column's ordering pivot: an approved PR is one keystroke from

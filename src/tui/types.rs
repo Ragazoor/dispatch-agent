@@ -406,6 +406,9 @@ pub struct AgentTracking {
     pub notified_review: HashSet<TaskId>,
     pub notified_needs_input: HashSet<TaskId>,
     pub last_pr_poll: HashMap<TaskId, Instant>,
+    /// Per-task PR-poll failure bookkeeping. Absent until a task's first
+    /// failure; see [`PrPollState`].
+    pub pr_poll: HashMap<TaskId, PrPollState>,
     /// A task that just *received* a native peer message — envelope glyph.
     pub message_flash: HashMap<TaskId, Instant>,
     /// A task that just *sent* one — its own glyph, same TTL and fill as
@@ -430,10 +433,37 @@ impl AgentTracking {
         self.notified_review.remove(&id);
         self.notified_needs_input.remove(&id);
         self.last_pr_poll.remove(&id);
+        self.pr_poll.remove(&id);
         self.message_flash.remove(&id);
         self.message_flash_sent.remove(&id);
         self.auto_dispatch_failed.remove(&id);
     }
+}
+
+/// Per-task PR-poll bookkeeping: how many times in a row reading this task's PR
+/// failed permanently, when the next attempt is allowed, and whether polling has
+/// given up altogether.
+///
+/// Session-scoped and never persisted, which is deliberate rather than an
+/// oversight. `SubStatus::PrUnreachable` is the durable, user-visible shadow of
+/// `gave_up`; this struct is the mechanism. Because it dies with the process, a
+/// restart polls a `pr_unreachable` task once more — and that is the only
+/// recovery path the user has for the failure that motivated it, since "no
+/// account has access" is fixed on GitHub, not on the task. See `PrPollState`
+/// in `docs/specs/core.allium`.
+#[derive(Debug, Default, Clone)]
+pub struct PrPollState {
+    /// Reset to zero by any successful poll, and deliberately untouched by
+    /// transient failures — a long GitHub outage must not strand the board.
+    pub consecutive_permanent_failures: u32,
+    /// Consecutive transient failures, counted separately so the backoff can
+    /// widen without ever advancing the give-up counter above.
+    pub consecutive_transient_failures: u32,
+    /// Transient-failure backoff deadline. `None` means "eligible on the next
+    /// tick that clears `PR_POLL_INTERVAL`", the unthrottled default.
+    pub next_poll_at: Option<Instant>,
+    /// Polling has stopped for this task for the rest of the session.
+    pub gave_up: bool,
 }
 
 // ---------------------------------------------------------------------------

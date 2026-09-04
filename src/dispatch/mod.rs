@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Context;
 
 use crate::models::{extract_github_repo, ReviewDecision};
 use crate::process::{stderr_str, stdout_str, ProcessRunner, SUBPROCESS_TIMEOUT};
@@ -61,8 +61,82 @@ pub struct PrStatus {
 // PR functions
 // ---------------------------------------------------------------------------
 
+/// Why one `gh pr view` attempt failed, split by the only distinction the
+/// caller acts on: whether repeating the same call could ever answer
+/// differently.
+///
+/// Retrying a permanent failure on a timer is what turned five unreadable PRs
+/// into 63,000 identical log lines, so the split is load-bearing rather than
+/// cosmetic. See `PrCheckOutcome` in `docs/specs/core.allium` and
+/// `PollPrStatus` in `docs/specs/pr-workflow.allium`.
+#[derive(Debug)]
+pub enum PrCheckFailure {
+    /// Cannot succeed until something outside dispatch changes: the repository
+    /// does not resolve, credentials are bad or missing, there is no PR behind
+    /// the url, or gh reported a state dispatch cannot map.
+    Permanent(anyhow::Error),
+    /// May succeed on a later attempt: connection failure, timeout, 5xx, a
+    /// spent rate limit, a reset stream.
+    Transient(anyhow::Error),
+}
+
+impl PrCheckFailure {
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, PrCheckFailure::Permanent(_))
+    }
+
+    fn inner(&self) -> &anyhow::Error {
+        match self {
+            PrCheckFailure::Permanent(e) | PrCheckFailure::Transient(e) => e,
+        }
+    }
+}
+
+impl std::fmt::Display for PrCheckFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.inner())
+    }
+}
+
+/// Substrings of `gh`'s stderr that mean retrying cannot help.
+///
+/// String matching is unsatisfying, but gh exposes no machine-readable failure
+/// kind: the exit status is 1 for a spent rate limit and for a repository that
+/// does not exist alike. Every entry is a verbatim fragment observed in a real
+/// app.log, kept short enough to survive gh rewording the sentence around it.
+const PERMANENT_GH_FAILURE_MARKERS: &[&str] = &[
+    // The gh account cannot see the repository — renamed, deleted, or (much
+    // more often) never granted access.
+    "Could not resolve to a Repository",
+    "Bad credentials",
+    "Requires authentication",
+    // The url is not a PR at all. Real cases in the log include issue urls, a
+    // dependabot alert url, and a static-reports link.
+    "no pull requests found for branch",
+];
+
+/// Classify a `gh` failure, defaulting to [`PrCheckFailure::Transient`].
+///
+/// The default direction matters: a transient failure misread as permanent
+/// strands a task under `pr_unreachable`, while a permanent one misread as
+/// transient costs only a slowing trickle of doomed calls. So anything
+/// uncatalogued retries.
+fn classify_gh_failure(stderr: &str, error: anyhow::Error) -> PrCheckFailure {
+    if PERMANENT_GH_FAILURE_MARKERS
+        .iter()
+        .any(|marker| stderr.contains(marker))
+    {
+        PrCheckFailure::Permanent(error)
+    } else {
+        PrCheckFailure::Transient(error)
+    }
+}
+
 /// Check the current status of a PR using `gh pr view`.
-pub fn check_pr_status(pr_url: &str, runner: &dyn ProcessRunner) -> Result<PrStatus> {
+pub fn check_pr_status(
+    pr_url: &str,
+    runner: &dyn ProcessRunner,
+) -> std::result::Result<PrStatus, PrCheckFailure> {
     let output = runner
         .run(
             "gh",
@@ -76,16 +150,23 @@ pub fn check_pr_status(pr_url: &str, runner: &dyn ProcessRunner) -> Result<PrSta
                 r#"[.state, .reviewDecision] | join("\n")"#,
             ],
         )
-        .context("Failed to run gh pr view")?;
+        .context("Failed to run gh pr view")
+        // A spawn failure is about this machine, not about this PR, so it must
+        // not count towards giving up on the task.
+        .map_err(PrCheckFailure::Transient)?;
     if !output.status.success() {
-        anyhow::bail!("gh pr view failed: {}", stderr_str(&output));
+        let stderr = stderr_str(&output);
+        let error = anyhow::anyhow!("gh pr view failed: {stderr}");
+        return Err(classify_gh_failure(&stderr, error));
     }
 
     let stdout = stdout_str(&output);
     let mut lines = stdout.lines();
+    // No output where gh reported success is unmappable, and stays unmappable
+    // however often it is retried.
     let state_str = lines
         .next()
-        .ok_or_else(|| anyhow::anyhow!("gh pr view: no output"))?
+        .ok_or_else(|| PrCheckFailure::Permanent(anyhow::anyhow!("gh pr view: no output")))?
         .to_uppercase();
     // review_decision is optional — repos without branch-protection rules omit it.
     let review_str = lines.next().unwrap_or("").to_uppercase();
@@ -94,7 +175,11 @@ pub fn check_pr_status(pr_url: &str, runner: &dyn ProcessRunner) -> Result<PrSta
         "OPEN" => PrState::Open,
         "MERGED" => PrState::Merged,
         "CLOSED" => PrState::Closed,
-        other => anyhow::bail!("gh pr view: unknown PR state {:?}", other),
+        other => {
+            return Err(PrCheckFailure::Permanent(anyhow::anyhow!(
+                "gh pr view: unknown PR state {other:?}"
+            )));
+        }
     };
 
     let review_decision = ReviewDecision::parse(&review_str);

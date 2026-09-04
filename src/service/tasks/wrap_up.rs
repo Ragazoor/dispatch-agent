@@ -119,6 +119,12 @@ impl TaskService {
             tokio::task::spawn_blocking(move || crate::tmux::kill_window(&window, &*runner)).await;
         match joined {
             Ok(Ok(())) => {}
+            // By the time a session closes its window is usually already gone,
+            // which is the state this call was asking for — debug, not warn.
+            // A kill that was attempted and failed still warns.
+            Ok(Err(e)) if crate::tmux::is_window_absent_error(&e) => {
+                tracing::debug!("kill_session_window: tmux window was already gone");
+            }
             Ok(Err(e)) => tracing::warn!("kill_session_window: tmux kill-window failed: {e:#}"),
             Err(e) => tracing::warn!("kill_session_window: worker died: {e}"),
         }

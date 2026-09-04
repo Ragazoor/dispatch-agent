@@ -38,6 +38,20 @@ pub(in crate::tui) const GG_CHORD_TIMEOUT: Duration = Duration::from_millis(150)
 /// Interval between PR status polls for tasks in review.
 pub(in crate::tui) const PR_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Consecutive permanent PR-read failures before polling gives up on a task and
+/// marks it `pr_unreachable`.
+///
+/// Above one deliberately: a GitHub incident can briefly report a real
+/// repository as unresolvable, and a single blip must not strand a task
+/// (`core.allium`: `pr_poll_permanent_failure_threshold`).
+pub(crate) const PR_POLL_PERMANENT_FAILURE_THRESHOLD: u32 = 3;
+
+/// Ceiling on the transient-failure backoff. A PR whose reads keep failing for
+/// a retryable reason is polled at a widening interval up to this cap, rather
+/// than every `PR_POLL_INTERVAL` forever (`core.allium`:
+/// `pr_poll_backoff_max`).
+pub(in crate::tui) const PR_POLL_BACKOFF_MAX: Duration = Duration::from_secs(30 * 60);
+
 /// How long a delivered message keeps flashing its task's card — warm fill,
 /// envelope glyph, and a frame in the column's identity colour.
 ///

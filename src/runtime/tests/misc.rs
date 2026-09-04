@@ -167,6 +167,30 @@ mod browser_and_tmux_window {
         assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
     }
 
+    /// Clearing subagent entries for a task that no longer exists is moot, not
+    /// a fault: the task was deleted while its hook was still in flight. Only
+    /// the typed `ServiceError::NotFound` is demoted, so a real DB failure on
+    /// the same path still warns.
+    #[tokio::test]
+    async fn exec_clear_subagents_is_silent_when_the_task_is_gone() {
+        let log = crate::test_log::logged_during(|| async {
+            let db = test_db().await;
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let mock = Arc::new(MockProcessRunner::new(vec![]));
+            let rt = make_runtime(db, tx, mock).await;
+
+            // Never created, so the service reports NotFound.
+            rt.exec_clear_subagents(crate::models::TaskId(4242), crate::models::DrainMode::Drain)
+                .await;
+        })
+        .await;
+
+        assert!(
+            !log.contains("failed to clear subagent/shell entries"),
+            "a task that no longer exists must not warn, got log: {log}"
+        );
+    }
+
     #[tokio::test]
     async fn exec_kill_tmux_window_failure_is_best_effort() {
         let db = test_db().await;

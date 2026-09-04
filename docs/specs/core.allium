@@ -45,6 +45,22 @@ enum TaskTag { bug | feature | chore | pr_review | research | fix | dependabot }
 -- pr-workflow.allium: PollPrStatus).
 enum UrlType { pr | security_alert | issue | other }
 
+-- How one attempt to read a PR's state from GitHub ended. The two failure
+-- values differ in exactly one respect that matters to the caller: whether
+-- repeating the same call could ever produce a different answer. Retrying a
+-- permanent failure is pure waste, and doing it on a timer is how a single
+-- unreadable PR generates tens of thousands of identical log lines.
+-- See pr-workflow.allium: PollPrStatus.
+enum PrCheckOutcome {
+    succeeded            -- GitHub answered; the PR's state and review decision are known
+    failed_permanently   -- cannot succeed until something outside dispatch changes:
+                         -- the repository does not resolve, credentials are bad,
+                         -- authentication is required, there is no PR at that url,
+                         -- or GitHub reported a state dispatch does not recognise
+    failed_transiently   -- may succeed on a later attempt: connection failure,
+                         -- TLS/read/dial timeout, 5xx, rate limit, stream reset
+}
+
 -- FeedRole is the routing role of an epic within a PR-review feed hierarchy.
 -- `none` is the default for ordinary epics; the other roles tag a sub-epic as a
 -- destination bucket for PR items routed by feed signals (see feeds.allium: Signal).
@@ -89,6 +105,12 @@ enum SubStatus {
                       -- on someone else's behalf. The UI separates the two —
                       -- see "Derived review sections" below.
     pr_closed         -- GitHub closed the PR without merging; task stays in review so a human can act
+    pr_unreachable    -- dispatch could not read the PR at all and has stopped polling
+                      -- this task: the repository does not resolve, credentials are
+                      -- bad, or there is no PR at that url. Task stays in review so a
+                      -- human can act. Unlike conflict, it is NOT guarded against
+                      -- overwrite — any later successful poll clears it, which is the
+                      -- sole recovery path (see pr-workflow.allium: PollPrStatus).
 }
 
 -- == Derived review sections ==
@@ -136,7 +158,7 @@ enum SubStatus {
 -- constraint and in-code via SubStatus.is_valid_for):
 --   backlog   : none
 --   running   : active | needs_input | stale | stale_shell | crashed | conflict
---   review    : awaiting_review | changes_requested | approved | conflict | pr_closed
+--   review    : awaiting_review | changes_requested | approved | conflict | pr_closed | pr_unreachable
 --   done      : none
 --   archived  : none
 --
@@ -700,6 +722,43 @@ entity SplitPane {
         -- Reset to true on split entry and exit.
 }
 
+-- Per-task PR-poll bookkeeping: how many times in a row reading this task's PR
+-- failed permanently, when the next attempt is allowed, and whether polling has
+-- given up altogether.
+--
+-- Runtime-only and never persisted, like BoardSelection and SplitPane above. It
+-- is modelled rather than left as an implementation detail because giving up is
+-- a state change the user sees, so it must be expressible.
+entity PrPollState {
+    task: Task
+    consecutive_permanent_failures: Integer = 0
+    -- Counted separately from the permanent failures above, which is the whole
+    -- mechanism keeping a GitHub outage from stranding the board: this one
+    -- widens the backoff, and only the other one can reach the give-up
+    -- threshold.
+    consecutive_transient_failures: Integer = 0
+    next_poll_at: Timestamp?
+    gave_up: Boolean = false
+
+    @guidance
+        -- Conceptually one exists per polled task; the fields' defaults are the
+        -- state of a task that has never failed, so a task with no row yet reads
+        -- as zero failures, no backoff and not given up.
+        --
+        -- gave_up is the in-memory gate that stops polling. Task.sub_status =
+        -- pr_unreachable is its persisted, user-visible shadow: the two are set
+        -- together, but only sub_status survives a restart.
+        --
+        -- Because this state is session-scoped, an app restart polls a
+        -- pr_unreachable task once more. That is deliberate, not an oversight.
+        -- The failure it exists for — a repository the gh account cannot read —
+        -- is fixed on GitHub, not on the task, so there is nothing the user
+        -- could edit to earn a retry. A restart is the retry.
+        --
+        -- next_poll_at carries the transient backoff. Null means "eligible on
+        -- the next tick that clears pr_poll_interval", the unthrottled default.
+}
+
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
@@ -720,6 +779,14 @@ config {
     message_flash_ttl: Duration = 30.seconds
     notifications_enabled: Boolean = false
     pr_poll_interval: Duration = 30.seconds
+    -- Ceiling on the transient-failure backoff. A PR whose reads keep failing
+    -- for a retryable reason is polled at a widening interval up to this cap,
+    -- rather than every pr_poll_interval forever.
+    pr_poll_backoff_max: Duration = 30.minutes
+    -- Consecutive permanent failures before polling gives up on a task and
+    -- marks it pr_unreachable. Above one so that a GitHub incident briefly
+    -- reporting a real repository as unresolvable does not strand a task.
+    pr_poll_permanent_failure_threshold: Integer = 3
     budget_poll_interval: Duration = 10.seconds
     budget_stale_after: Duration = 10.minutes
     -- The floor under every feed cadence, however it is spelled and whoever
@@ -904,7 +971,7 @@ config {
 --       1 | Active           | running       | active
 --       2 | Blocked          | running       | needs_input
 --       3 | Stale            | running       | stale, crashed, conflict
---       4 | PR Created       | review        | awaiting_review, conflict, pr_closed
+--       4 | PR Created       | review        | awaiting_review, conflict, pr_closed, pr_unreachable
 --       5 | Revise           | review        | changes_requested
 --       6 | Approved         | review        | approved
 --       7 | Done             | done          | none
@@ -917,12 +984,18 @@ config {
 --   --+------------------------------------+------------------------------------
 --   1 | conflict                           | rebase/merge conflict — blocked
 --   2 | pr closed                          | closed without merging — decide
---   3 | changes requested                  | on the user's own PR — must fix
---   4 | approved                           | own PR, ready to merge
---   5 | awaiting review                    | nothing to do yet
---   6 | parked                   (derived) | no PR, agent session ended
---   7 | changes requested by me  (derived) | waiting on the other author
---   8 | approved by me           (derived) | nothing left for the user to do
+--   3 | pr unreachable                     | PR cannot be read — fix access or url
+--   4 | changes requested                  | on the user's own PR — must fix
+--   5 | approved                           | own PR, ready to merge
+--   6 | awaiting review                    | nothing to do yet
+--   7 | parked                   (derived) | no PR, agent session ended
+--   8 | changes requested by me  (derived) | waiting on the other author
+--   9 | approved by me           (derived) | nothing left for the user to do
+--
+-- "pr unreachable" sorts above "changes requested" because it is worse than a
+-- known task: until it is fixed the card's review state is not merely
+-- unfinished, it is unknown, and the board is quietly reporting a decision that
+-- may already have changed.
 --
 -- "approved" deliberately sorts ABOVE "awaiting review": an approved PR is
 -- actionable, an undecided one is not. "approved by me" sorts BELOW every other

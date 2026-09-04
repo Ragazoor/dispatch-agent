@@ -376,6 +376,19 @@ impl App {
                     .get(&t.id)
                     .is_none_or(|last| last.elapsed() > PR_POLL_INTERVAL)
             })
+            // Two further reasons to skip a task the filters above admitted.
+            // `gave_up` means repeated permanent failures have stopped polling
+            // for this session; `next_poll_at` is the transient backoff
+            // deadline. A task with no poll state has never failed, so it is
+            // always eligible. See PollPrStatus in pr-workflow.allium.
+            .filter(|t| {
+                self.agents.pr_poll.get(&t.id).is_none_or(|poll| {
+                    !poll.gave_up
+                        && poll
+                            .next_poll_at
+                            .is_none_or(|deadline| Instant::now() >= deadline)
+                })
+            })
             .filter_map(|t| {
                 t.url
                     .as_ref()

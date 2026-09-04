@@ -4557,3 +4557,37 @@ async fn find_task_by_plan_errors_on_undecodable_row() {
         "find_task_by_plan targets one row, so it must fail loudly, got {result:?}"
     );
 }
+
+/// `pr_unreachable` needs the tasks table's `(status, sub_status)` CHECK
+/// constraint to admit it for `review`, which migration v96 adds. Without that
+/// migration the patch below fails at the DB layer even though
+/// `SubStatus::is_valid_for` allows it (pr-workflow.allium: PrPollGaveUp).
+#[tokio::test]
+async fn task_sub_status_pr_unreachable_persists_for_review() {
+    let db = Database::open_in_memory().await.unwrap();
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "Test",
+            description: "desc",
+            repo_path: "/repo",
+            plan: None,
+            status: TaskStatus::Review,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+            phoenix: false,
+        })
+        .await
+        .unwrap();
+    db.patch_task(
+        id,
+        &TaskPatch::default().sub_status(SubStatus::PrUnreachable),
+    )
+    .await
+    .unwrap();
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.sub_status, SubStatus::PrUnreachable);
+}

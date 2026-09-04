@@ -140,6 +140,42 @@ async fn slow_db_call_emits_warning_above_threshold() {
     extract_field(&log, "duration_ms").expect("duration_ms field must be present");
 }
 
+/// The warning splits its duration into the two phases a reader needs to tell
+/// apart: waiting for a connection versus running the query.
+///
+/// Without the split the location field named the victim rather than the cause.
+/// The most frequent call site in a real app.log was a `SELECT 1` on the primary
+/// key at 200-300ms — a cost that query cannot incur, so the time was queueing
+/// and the logged location was innocent every time.
+///
+/// Magnitudes are not asserted: the threshold is pinned to zero against a
+/// trivial closure, so every phase here is around zero, and forcing a real wait
+/// would need a wall-clock sleep (banned — see `docs/conventions.md`). What is
+/// deterministic is that the two phases partition the total rather than each
+/// being a copy of it, which is the property that makes the line diagnostic.
+#[tokio::test]
+async fn slow_db_call_warning_splits_queue_time_from_execution_time() {
+    let log = logged_during_slow_db_call().await;
+
+    let duration_ms = extract_field(&log, "duration_ms").expect("duration_ms must be present");
+    let queued_ms = extract_field(&log, "queued_ms").expect("queued_ms must be present");
+    let execute_ms = extract_field(&log, "execute_ms").expect("execute_ms must be present");
+
+    assert!(
+        execute_ms <= duration_ms,
+        "execution cannot outlast the whole call: execute_ms={execute_ms} duration_ms={duration_ms}"
+    );
+    assert!(
+        queued_ms <= duration_ms,
+        "queueing cannot outlast the whole call: queued_ms={queued_ms} duration_ms={duration_ms}"
+    );
+    assert!(
+        queued_ms + execute_ms <= duration_ms,
+        "the phases must partition the total, not duplicate it: \
+         queued_ms={queued_ms} + execute_ms={execute_ms} > duration_ms={duration_ms}"
+    );
+}
+
 /// A `db_call` that completes under the threshold emits no warning. The
 /// threshold is pinned absurdly high rather than relying on a trivial closure
 /// beating the real 200ms — a loaded CI box can lose that race.

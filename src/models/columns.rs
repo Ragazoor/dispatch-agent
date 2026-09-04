@@ -46,6 +46,7 @@ impl VisualColumn {
                 SubStatus::AwaitingReview,
                 SubStatus::Conflict,
                 SubStatus::PrClosed,
+                SubStatus::PrUnreachable,
             ],
         },
         VisualColumn {

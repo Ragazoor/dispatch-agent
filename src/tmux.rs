@@ -364,6 +364,23 @@ pub fn kill_window(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Result<()
     Ok(())
 }
 
+/// Whether a [`kill_window`] error means the window was simply already gone,
+/// as opposed to a kill that was attempted and failed.
+///
+/// For a best-effort teardown the two are worlds apart: an absent window is the
+/// state the caller wanted, while a failed kill leaves a real window behind. The
+/// distinction was previously invisible, so every teardown of an
+/// already-closed window warned.
+///
+/// Matching on the message is sound here in a way it would not be for an
+/// external tool's output: the wording is produced by [`window_target`] in this
+/// module, and `window_target_treats_a_failed_lookup_as_not_found` pins it.
+/// Prefer [`kill_window_if_present`] when an extra tmux round-trip is
+/// acceptable; use this when it is not.
+pub fn is_window_absent_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("no tmux window named")
+}
+
 /// Switch the active tmux window to the one with the given name.
 pub fn select_window(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Result<()> {
     let target = window_target(window.as_str(), runner)?;
@@ -1266,6 +1283,43 @@ mod tests {
     }
 
     // --- kill_window_if_present ---
+
+    // --- is_window_absent_error ---
+
+    /// The predicate the best-effort teardowns use to tell "already gone" from
+    /// "the kill failed". Driven through the real `kill_window` rather than
+    /// hand-built error strings, so it is pinned to the error `window_target`
+    /// actually produces — the whole reason matching the message is defensible
+    /// here.
+    #[test]
+    fn kill_window_on_an_absent_window_yields_an_absent_error() {
+        // `with_queued_window_lookup` so the empty listing below really answers
+        // the resolver; the default permissive lookup would invent a pane and
+        // the kill would succeed.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"")])
+            .with_queued_window_lookup();
+        let err = kill_window(&test_tmux_window("gone-window"), &mock)
+            .expect_err("an absent window must fail to resolve");
+        assert!(
+            is_window_absent_error(&err),
+            "an absent window must be recognised as absent, got: {err:#}"
+        );
+    }
+
+    /// The direction that matters for the demotion: a kill that was attempted
+    /// and failed must NOT be classified as absent, or a real leaked window
+    /// would be logged at debug and never seen.
+    #[test]
+    fn a_failed_kill_is_not_an_absent_error() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("server exited")])
+            .with_windows(&["task-7"]);
+        let err = kill_window(&test_tmux_window("task-7"), &mock)
+            .expect_err("the kill was scripted to fail");
+        assert!(
+            !is_window_absent_error(&err),
+            "a genuine kill failure must not be mistaken for an absent window, got: {err:#}"
+        );
+    }
 
     #[test]
     fn kill_window_if_present_kills_when_present() {

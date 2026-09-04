@@ -72,6 +72,14 @@ value SlowDbCallWarning {
                            -- including time spent queued behind other calls on
                            -- the same connection, or retrying behind another
                            -- connection's SQLite lock
+    execute_ms:  Integer   -- how long the call's own work ran once it held a
+                           -- connection. The directly measured part
+    queued_ms:   Integer   -- the rest of duration_ms: everything that was not
+                           -- the call's own work, which is dominated by waiting
+                           -- for a connection but also absorbs dispatch
+                           -- overhead. Derived as duration_ms - execute_ms
+                           -- rather than measured, so the two parts always sum
+                           -- to duration_ms exactly
     location:    String    -- call-site of the invoking db_call / db_call_read
                            -- caller, formatted as "file.rs:line:column"
                            -- (std::panic::Location's Display, which includes
@@ -228,6 +236,49 @@ rule TrajectoryWriteFailureIsSilent {
         -- subscriber; it has no entity representation in this spec.
 }
 
+rule AlreadyDoneTeardownIsNotAFailure {
+    -- A best-effort teardown whose target has already gone did not fail: it
+    -- found the state it was asking for. Killing a tmux window that has already
+    -- closed, or clearing tracking entries for a task that has already been
+    -- deleted, both land here.
+    --
+    -- Reported at debug rather than warn. The distinction is not cosmetic: a
+    -- teardown warning that fires on the normal case trains the reader to skip
+    -- the line, which is how the genuinely-failed teardowns beside it stop being
+    -- read too.
+    when: TeardownTargetAlreadyGone(target)
+
+    ensures: TeardownSkipNoted(target: target)
+
+    @guidance
+        -- The distinction must be drawn on WHY the teardown did not happen, not
+        -- on the fact that it did not. A teardown that was attempted and failed
+        -- leaves a real window or real rows behind and still warns — see
+        -- TeardownFailureIsWarned below.
+        --
+        -- Deciding which case applies needs a signal narrower than "an error
+        -- came back", and each call site has one: task-clearing gets a typed
+        -- not-found error from the service layer, while the tmux kill has only
+        -- the resolver's own message. Matching on that message is sound because
+        -- dispatch produces it itself and a test pins the wording — it would not
+        -- be sound for an external tool's output.
+}
+
+rule TeardownFailureIsWarned {
+    -- The other direction of AlreadyDoneTeardownIsNotAFailure: a teardown that
+    -- was actually attempted and failed. The window is still there, or the rows
+    -- are, and nothing will retry — so this is exactly the case the warning
+    -- exists for.
+    when: TeardownAttemptFailed(target, error)
+
+    ensures: TeardownWarning(target: target, error: error)
+
+    @guidance
+        -- Still best-effort in the sense that no caller is told and nothing is
+        -- retried: the surrounding operation has already persisted, and there is
+        -- no recovery a caller could take. The log line is the entire response.
+}
+
 rule UsageWriteFailureIsSilent {
     -- Feature-usage writes are best-effort in the same sense trajectory
     -- writes are: the failure must not propagate to the keypress handler or
@@ -363,15 +414,21 @@ rule DbCallSlowWarning {
     -- DbCallCompleted fires for both, and the threshold check and resulting
     -- warning are identical on both. Which connection served the call is not
     -- part of the warning.
-    when: DbCallCompleted(location, elapsed_ms)
+    when: DbCallCompleted(location, elapsed_ms, execute_ms)
 
     -- Only abnormally slow calls warn. Calls at or below the threshold produce
-    -- no log line.
+    -- no log line. The threshold is deliberately still measured against total
+    -- elapsed time, not execute_ms: a call that really did take five seconds
+    -- mattered to whoever was waiting on it, however the time was spent. The
+    -- split below changes what the warning explains, not which calls it fires
+    -- for.
     requires: elapsed_ms > config.slow_db_call_threshold_ms
 
     ensures: SlowDbCallLogged(
         warning: SlowDbCallWarning {
             duration_ms: elapsed_ms,
+            queued_ms: elapsed_ms - execute_ms,
+            execute_ms: execute_ms,
             location: location
         }
     )
@@ -384,18 +441,25 @@ rule DbCallSlowWarning {
         -- #[track_caller] so no call site needs to change; it is rendered via
         -- std::panic::Location's Display as "file.rs:line:column".
         --
-        -- DIAGNOSTIC-QUALITY CAVEAT: read calls are assigned to a pool
+        -- WHY THE DURATION IS SPLIT: read calls are assigned to a pool
         -- connection round-robin, so a cheap query can land on a connection
         -- that is already mid-flight on an unrelated slow read, wait out that
-        -- connection's queue, and cross the threshold on queueing alone. A
-        -- "slow db_call" line therefore reports how long that call took, not
-        -- necessarily what its own query cost. This is the same ambiguity the
-        -- single-connection path always had (a fast call queued behind a slow
-        -- one), now spread across several connections instead of one — not a
-        -- new correctness issue, but worth knowing before reading a warning as
-        -- evidence that the logged call site's own query is slow. Correlating
-        -- neighbouring warn lines by timestamp is the only way to tell the two
-        -- apart from the log alone.
+        -- connection's queue, and cross the threshold on queueing alone. The
+        -- single-connection writer path has always had the same ambiguity (a
+        -- fast call queued behind a slow one), now spread across several
+        -- connections instead of one.
+        --
+        -- Reporting only total elapsed time made the warning name the victim
+        -- rather than the cause, and misleadingly: the most frequent call site
+        -- in a real log was `task_exists`, a SELECT 1 on the primary key, at
+        -- 200-300ms. A single-row indexed lookup cannot cost that, so the
+        -- location was pointing at an innocent query every time.
+        --
+        -- queued_ms and execute_ms make the two separable from a single line,
+        -- with no timestamp correlation across neighbouring warnings. High
+        -- queued_ms with low execute_ms means contention and the location is
+        -- incidental; high execute_ms means the logged call site really is the
+        -- expensive one.
         --
         -- SCOPE BOUNDARY (intentional, not a bug): SlowDbCallLogged is a
         -- tracing::warn event ("slow db_call"), not an entity, and its durable

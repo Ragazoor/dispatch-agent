@@ -156,6 +156,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (93, migrate_v93_fix_root_epic_feed_role_uniqueness),
     (94, migrate_v94_add_feed_append_only),
     (95, migrate_v95_drop_main_session_dir),
+    (96, migrate_v96_allow_pr_unreachable_for_review),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1572,6 +1573,28 @@ pub(super) fn migrate_v89_allow_pr_closed_for_review(conn: &Connection) -> Resul
              (status = 'done'     AND sub_status = 'none') OR\n        \
              (status = 'archived' AND sub_status = 'none')\n    )",
         "v89",
+    )
+}
+
+/// Adds `'pr_unreachable'` to the tasks table's `(status, sub_status)` CHECK
+/// constraint's `review` branch, so `SubStatus::PrUnreachable` can actually be
+/// persisted. Mirrors `migrate_v89_allow_pr_closed_for_review` exactly; see
+/// `rebuild_tasks_table_with_check` for the rebuild mechanics.
+///
+/// The value is set when PR polling gives up on a task after repeated
+/// permanent failures, so the board can say the PR is unreadable instead of
+/// showing a review decision dispatch has not been able to refresh
+/// (pr-workflow.allium: PrPollGaveUp).
+pub(super) fn migrate_v96_allow_pr_unreachable_for_review(conn: &Connection) -> Result<()> {
+    rebuild_tasks_table_with_check(
+        conn,
+        "CHECK (\n        \
+             (status = 'backlog'  AND sub_status = 'none') OR\n        \
+             (status = 'running'  AND sub_status IN ('active','needs_input','stale','stale_shell','crashed','conflict')) OR\n        \
+             (status = 'review'   AND sub_status IN ('awaiting_review','changes_requested','approved','conflict','pr_closed','pr_unreachable')) OR\n        \
+             (status = 'done'     AND sub_status = 'none') OR\n        \
+             (status = 'archived' AND sub_status = 'none')\n    )",
+        "v96",
     )
 }
 

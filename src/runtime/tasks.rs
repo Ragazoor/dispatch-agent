@@ -222,8 +222,21 @@ impl TuiRuntime {
             }
             models::DrainMode::NoDrain => self.task_svc.clear_structural_no_drain(id).await,
         };
-        if let Err(e) = result {
-            tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent/shell entries");
+        match result {
+            Ok(()) => {}
+            // The task was deleted while its hook was still in flight. There
+            // are no entries left to clear, which is the state this call was
+            // asking for — so it is not a fault, and warning about it only
+            // trains the reader to skip the line.
+            Err(crate::service::ServiceError::NotFound(_)) => {
+                tracing::debug!(
+                    task_id = id.0,
+                    "skipped clearing subagent/shell entries: task no longer exists"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent/shell entries");
+            }
         }
     }
 

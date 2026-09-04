@@ -187,7 +187,14 @@ impl TuiRuntime {
 
         tokio::task::spawn_blocking(move || {
             if let Err(e) = tmux::kill_window(&window, &*runner) {
-                tracing::warn!(%window, "failed to kill tmux window (best-effort): {e:#}");
+                // An already-absent window is the outcome this call wanted, so
+                // it is logged at debug. Only a kill that was attempted and
+                // failed leaves a real window behind and warrants a warning.
+                if tmux::is_window_absent_error(&e) {
+                    tracing::debug!(%window, "tmux window was already gone, nothing to kill");
+                } else {
+                    tracing::warn!(%window, "failed to kill tmux window (best-effort): {e:#}");
+                }
             }
         })
     }

@@ -20,6 +20,15 @@ pub enum PrMessage {
         id: TaskId,
         review_decision: Option<ReviewDecision>,
     },
+    /// A PR read failed. `permanent` is the whole reason this message exists:
+    /// it says whether repeating the call could ever answer differently, and so
+    /// whether this failure counts towards giving up on the task
+    /// (`pr-workflow.allium`: `PollPrStatus`).
+    CheckFailed {
+        id: TaskId,
+        permanent: bool,
+        error: String,
+    },
 }
 
 impl PrMessage {
@@ -32,6 +41,11 @@ impl PrMessage {
                 id,
                 review_decision,
             } => app.handle_pr_review_state(id, review_decision),
+            PrMessage::CheckFailed {
+                id,
+                permanent,
+                error,
+            } => app.handle_pr_check_failed(id, permanent, error),
         }
     }
 }

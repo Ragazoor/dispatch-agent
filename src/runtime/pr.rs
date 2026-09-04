@@ -24,8 +24,18 @@ impl TuiRuntime {
                     }));
                 }
             },
-            Err(e) => {
-                tracing::warn!(task_id = id.0, "PR status check failed: {e}");
+            // Deliberately NOT logged here. This ran once per task per
+            // PR_POLL_INTERVAL, so a permanently unreadable PR warned every 30
+            // seconds — 63,000 identical lines from five tasks over five
+            // months. The failure now travels to the update loop, which counts
+            // it and warns once, on the transition into giving up
+            // (pr-workflow.allium: PrPollGaveUp).
+            Err(failure) => {
+                let _ = tx.send(Message::Pr(crate::tui::messages::PrMessage::CheckFailed {
+                    id,
+                    permanent: failure.is_permanent(),
+                    error: failure.to_string(),
+                }));
             }
         })
     }

@@ -59,31 +59,95 @@ rule PrLearningsGate {
 rule PollPrStatus {
     when: Tick()
 
-    for task in core/Tasks where status = review and url != null and url.url_type = pr:
+    -- `pr_poll_due` reads this task's core/PrPollState and answers false in
+    -- exactly two cases: polling gave up on the task (gave_up), or its
+    -- transient backoff deadline has not passed yet (next_poll_at > now). A
+    -- task with no poll state has never failed, so it is always due.
+    for task in core/Tasks
+        where status = review
+          and url != null
+          and url.url_type = pr
+          and pr_poll_due(task):
 
-        -- Branch on GitHub's reported PR state:
-        --   Merged -> fire PrMerged; task moves to done
-        --   Closed -> fire PrClosed; task stays in review, sub_status
-        --             becomes pr_closed
-        --   Open   -> refresh sub_status from review_decision
+        -- Branch first on whether GitHub answered at all, then on the state it
+        -- reported:
+        --   succeeded, merged -> fire PrMerged; task moves to done
+        --   succeeded, closed -> fire PrClosed; task stays in review,
+        --                        sub_status becomes pr_closed
+        --   succeeded, open   -> refresh sub_status from review_decision
+        --   failed permanently -> count it; at the threshold, give up and mark
+        --                         the task pr_unreachable
+        --   failed transiently -> widen the backoff and try again later
         -- Only pr-typed urls are polled; tasks carrying a security_alert,
         -- issue, or other url are never polled for PR merge/close.
         ensures:
-            let status = check_pr_status(task.url.url)
-            if status.state = merged:
-                PrMerged(task: task)
-            else if status.state = closed:
-                PrClosed(task: task)
-            else if status.state = open and task.sub_status != conflict:
-                let new_sub =
-                    if status.review_decision = approved:
-                        core/SubStatus.approved
-                    else if status.review_decision = changes_requested:
-                        core/SubStatus.changes_requested
-                    else:
-                        core/SubStatus.awaiting_review
-                if task.sub_status != new_sub:
-                    task.sub_status = new_sub
+            let outcome = check_pr_status(task.url.url)
+            let poll = core/PrPollState{task}
+
+            if outcome.kind = core/PrCheckOutcome.succeeded:
+                -- Reaching GitHub retires every earlier failure, including a
+                -- give-up. This is the only path out of pr_unreachable, which
+                -- is why the open branch below does not guard against it the
+                -- way it guards conflict.
+                if exists poll:
+                    poll.consecutive_permanent_failures = 0
+                    poll.consecutive_transient_failures = 0
+                    poll.next_poll_at = null
+                    poll.gave_up = false
+                if outcome.state = merged:
+                    PrMerged(task: task)
+                else if outcome.state = closed:
+                    PrClosed(task: task)
+                else if outcome.state = open and task.sub_status != conflict:
+                    let new_sub =
+                        if outcome.review_decision = approved:
+                            core/SubStatus.approved
+                        else if outcome.review_decision = changes_requested:
+                            core/SubStatus.changes_requested
+                        else:
+                            core/SubStatus.awaiting_review
+                    if task.sub_status != new_sub:
+                        task.sub_status = new_sub
+
+            else if outcome.kind = core/PrCheckOutcome.failed_permanently:
+                let failures =
+                    if exists poll: poll.consecutive_permanent_failures + 1
+                    else: 1
+                if exists poll:
+                    poll.consecutive_permanent_failures = failures
+                else:
+                    core/PrPollState.created(
+                        task: task,
+                        consecutive_permanent_failures: failures,
+                        consecutive_transient_failures: 0,
+                        next_poll_at: null,
+                        gave_up: false
+                    )
+                if failures >= core/config.pr_poll_permanent_failure_threshold:
+                    task.sub_status = core/SubStatus.pr_unreachable
+                    task.updated_at = now
+                    PrPollGaveUp(task: task, reason: outcome.reason)
+
+            else:
+                -- Transient: the permanent counter is deliberately left
+                -- untouched — a network blip must never accumulate towards a
+                -- give-up — and only the deadline moves, widening from
+                -- pr_poll_interval up to pr_poll_backoff_max.
+                let transients =
+                    if exists poll: poll.consecutive_transient_failures + 1
+                    else: 1
+                let deadline = now + next_pr_poll_backoff(transients)
+                if exists poll:
+                    poll.consecutive_transient_failures = transients
+                    poll.next_poll_at = deadline
+                else:
+                    core/PrPollState.created(
+                        task: task,
+                        consecutive_permanent_failures: 0,
+                        consecutive_transient_failures: 1,
+                        next_poll_at: deadline,
+                        gave_up: false
+                    )
 
     @guidance
         -- Runs during each tick for review tasks whose url is pr-typed
@@ -100,6 +164,68 @@ rule PollPrStatus {
         -- Closed-without-merge PRs: fire PrClosed every tick the PR stays
         -- closed. Unlike PrMerged, this is NOT a terminal transition — the
         -- task stays in review; see the PrClosed rule for what changes.
+        --
+        -- == Why failure is branched, not merely logged ==
+        --
+        -- A PR read can fail for a reason no amount of retrying will fix: the
+        -- repository does not resolve, the credentials are bad, or the url has
+        -- no PR behind it. Polling one of those every pr_poll_interval is not
+        -- resilience, it is a loop, and the user learns nothing from it — the
+        -- card sits in awaiting_review indefinitely, reporting a review state
+        -- dispatch has not actually been able to read since the PR was opened.
+        --
+        -- So permanent failures are counted, and at
+        -- pr_poll_permanent_failure_threshold consecutive ones the task is
+        -- marked pr_unreachable and polling stops. The threshold is above one
+        -- deliberately: a GitHub incident can briefly report a real repository
+        -- as unresolvable, and a single blip must not strand a task.
+        --
+        -- Transient failures never advance that counter. They widen the
+        -- backoff instead, so a GitHub outage or a spent rate limit costs a
+        -- slowing trickle of calls rather than one per task per tick.
+        --
+        -- Recovery needs no user action on the task, because usually there is
+        -- none available: the fix for "no account has access" happens on
+        -- GitHub. Give-up state is session-scoped (core/PrPollState), so a
+        -- restart retries; and any poll that reaches GitHub clears
+        -- pr_unreachable through the succeeded branch.
+}
+
+rule PrPollGaveUp {
+    when: PrPollGaveUp(task, reason)
+
+    requires: task.status = review
+
+    ensures:
+        let poll = core/PrPollState{task}
+        if exists poll:
+            poll.gave_up = true
+    ensures: UserInformed(about: pr_unreachable, task: task)
+
+    @guidance
+        -- Fires once, on the transition into giving up — not on every tick, and
+        -- not on each of the failures leading up to the threshold. The
+        -- corresponding log line is emitted here too, which is the whole point
+        -- of the card this rule answers: the old code logged one WARN per failed
+        -- attempt, so five unreadable PRs produced 63,000 identical lines.
+        --
+        -- Splitting this out of PollPrStatus mirrors PrMerged and PrClosed: the
+        -- poll rule detects, a named rule reacts. It also keeps `gave_up` written
+        -- in exactly one place.
+        --
+        -- Unlike PrMerged and PrClosed there is no distinct message carrying
+        -- this event in the implementation — the counting rule and this one are
+        -- satisfied together, in the handler that receives the failed read. The
+        -- decomposition is behavioural, so do not go looking for a
+        -- `PrPollGaveUp` variant.
+        --
+        -- `reason` carries the underlying gh failure so the log line and the
+        -- user-facing message can name it — "Could not resolve to a Repository"
+        -- is far more useful to the user than "PR unreachable".
+        --
+        -- Not terminal: the task stays in review. See core/PrPollState for why
+        -- an app restart retries, and PollPrStatus's succeeded branch for the
+        -- clearing path.
 }
 
 rule PrMerged {
