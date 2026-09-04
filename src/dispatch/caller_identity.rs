@@ -37,40 +37,14 @@
 //! at the MCP end, from a session that is not an agent at all
 //! (`CallerIdentityDependsOnTheLaunch` in docs/specs/mcp-task-tools.allium).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::models::TaskId;
 use crate::process::ProcessRunner;
+use crate::worktree_admin::worktree_admin_dir;
 
 /// Basename of the per-task config inside the worktree's git admin directory.
 const CONFIG_FILE: &str = "dispatch-mcp.json";
-
-/// The linked worktree's git administrative directory, read from the `.git`
-/// pointer file git itself writes there.
-///
-/// A linked worktree's `.git` is a FILE holding `gitdir: <path>`; a main
-/// checkout's is a directory. Reading the pointer rather than assembling
-/// `<repo>/.git/worktrees/<name>` by hand costs no subprocess and stays correct
-/// where the assembled guess would not — a repo that is itself a linked
-/// worktree, a relocated admin directory, or a name git had to disambiguate.
-///
-/// The pointer may be RELATIVE — `git worktree add --relative-paths`, or
-/// `worktree.useRelativePaths`, writes `gitdir: ../../.git/worktrees/<name>`.
-/// It is relative to the worktree, not to this process, which has its own
-/// unrelated working directory; joining it onto the worktree is what keeps the
-/// config from being written somewhere else entirely. An absolute pointer needs
-/// no arm of its own — `Path::join` discards the base for an absolute argument.
-///
-/// `None` for anything that is not a linked worktree, which is also the answer
-/// for a `MockProcessRunner` dispatch that never really ran `git worktree add`.
-fn worktree_admin_dir(worktree_path: &str) -> Option<PathBuf> {
-    let pointer = std::fs::read_to_string(Path::new(worktree_path).join(".git")).ok()?;
-    let dir = pointer.trim().strip_prefix("gitdir:")?.trim();
-    if dir.is_empty() {
-        return None;
-    }
-    Some(Path::new(worktree_path).join(dir))
-}
 
 /// Write the per-task MCP config for an agent about to be launched in
 /// `worktree_path`, returning the path a launch command should name.
@@ -137,6 +111,7 @@ mod tests {
     use crate::dispatch::tests::{claude_json_with_dispatch_entry, make_linked_worktree};
     use crate::process::MockProcessRunner;
     use serde_json::Value;
+    use std::path::Path;
 
     // -- worktree_admin_dir --
 

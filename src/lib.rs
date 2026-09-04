@@ -5,6 +5,7 @@ pub const DEFAULT_PORT: u16 = 3142;
 
 pub mod agent_tree;
 pub mod agent_tree_editor;
+pub mod agent_tree_open_set;
 pub(crate) mod claude_paths;
 pub mod cli;
 pub mod db;
@@ -25,6 +26,7 @@ pub mod setup;
 mod test_log;
 pub mod tmux;
 pub mod tui;
+pub mod worktree_admin;
 
 pub fn default_db_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
