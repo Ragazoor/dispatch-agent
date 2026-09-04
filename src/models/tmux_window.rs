@@ -55,8 +55,8 @@ pub(crate) const fn is_pane_id(s: &str) -> bool {
 /// that the string is a whole, valid window name — see `tmux::window_target`,
 /// which every name-taking helper calls to resolve it to a pane ID before use.
 ///
-/// It is deliberately *not* limited to `task-<id>`: `dispatch-main`, the TUI's
-/// own window and the editor windows are window names too, and the prefix
+/// It is deliberately *not* limited to `task-<id>`: the TUI's own window and
+/// the editor windows are window names too, and the prefix
 /// hazard applies to them identically. What it does exclude is the two things
 /// that are not window names — the empty string (tmux's "current window") and a
 /// pane ID (`%3`) — both of which bypass name resolution and so must never be
@@ -72,13 +72,13 @@ impl TmuxWindow {
     }
 
     /// Wrap a window name that is a literal in this crate's own source — the
-    /// board's `TUI` window, `dispatch-main`. `'static` proves the argument
+    /// board's `TUI` window. `'static` proves the argument
     /// cannot come from the database, from tmux, or from an MCP request;
     /// anything derived from data goes through [`parse`] instead.
     ///
     /// `'static` proves provenance, not validity, so this still checks the two
-    /// exclusions — as a `const fn`, which is the point: both call sites are
-    /// `const` items, so an empty or pane-ID literal is a compile error rather
+    /// exclusions — as a `const fn`, which is the point: the call site is
+    /// a `const` item, so an empty or pane-ID literal is a compile error rather
     /// than a panic. Nothing calls this outside a `const` context, so the
     /// `assert!`s have no runtime path to reach.
     ///
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn task_id_is_none_for_non_task_windows() {
-        for name in ["TUI", "dispatch-main", "task-", "task-abc"] {
+        for name in ["TUI", "edit-window", "task-", "task-abc"] {
             let window = TmuxWindow::parse(name).expect("valid window name");
             assert_eq!(window.task_id(), None, "{name}");
         }
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_ordinary_window_names() {
-        for name in ["task-42", "TUI", "dispatch-main", "%foo", "edit-1"] {
+        for name in ["task-42", "TUI", "edit-window", "%foo", "edit-1"] {
             assert_eq!(
                 TmuxWindow::parse(name).map(|w| w.as_str().to_string()),
                 Some(name.to_string()),

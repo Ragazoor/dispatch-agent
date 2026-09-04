@@ -3504,16 +3504,16 @@ fn assert_spawn_flags(site: &str, payload: &str) {
 #[test]
 fn all_spawn_sites_inject_the_statusline_settings_file() {
     // Every dispatch-spawned session must report budget windows, so the
-    // --settings overlay has to be on the agent, resume, and main-session
-    // command lines alike. See docs/specs/dispatch.allium: TokenBudgetIndicator
+    // --settings overlay has to be on the agent and resume command lines
+    // alike. See docs/specs/dispatch.allium: TokenBudgetIndicator
     // and StatusLineDecorator. `claude` also refuses to start at all when that
     // settings file is absent, so a site that dropped the flag would spawn a
     // session with no budget reporting, and one that kept it while the file went
     // missing would spawn no session at all.
     //
-    // These three are the whole set: `DISPATCH_PLUGIN_DIR` is interpolated in
-    // exactly three places in src/dispatch/agents.rs — dispatch_with_prompt (all
-    // agent dispatches funnel through it), resume_agent, create_main_session.
+    // These two are the whole set: `DISPATCH_PLUGIN_DIR` is interpolated in
+    // exactly two places in src/dispatch/agents.rs — dispatch_with_prompt (all
+    // agent dispatches funnel through it) and resume_agent.
 
     // 1. dispatch_agent -> dispatch_with_prompt
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
@@ -3545,18 +3545,6 @@ fn all_spawn_sites_inject_the_statusline_settings_file() {
             resume_script.index_of(Step::SendKeysLiteral),
             "claude",
         ),
-    );
-
-    // 3. create_main_session
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux send-keys -l
-        MockProcessRunner::ok(), // tmux send-keys Enter
-    ]);
-    create_main_session("/home/user", &mock).unwrap();
-    assert_spawn_flags(
-        "create_main_session",
-        &find_call_arg(&mock.recorded_calls(), 1, "claude"),
     );
 }
 

@@ -51,8 +51,8 @@ fn run_checked_stdout(runner: &dyn ProcessRunner, args: &[&str], context: &str) 
 ///
 /// Used by [`new_window`], [`set_window_dispatch_dir`] and
 /// [`ensure_split_hook`] — and so by every one of their callers, including
-/// `provision_worktree`'s `post_add` step, `resume_agent` and
-/// `create_main_session` (`src/dispatch/agents.rs`) — which is what closes
+/// `provision_worktree`'s `post_add` step and `resume_agent`
+/// (`src/dispatch/agents.rs`) — which is what closes
 /// #4202. Every other tmux call in this module still goes through the
 /// unbounded [`run_checked`]; if one of those turns out to need the same
 /// treatment it should get its own pass rather than folding in here.

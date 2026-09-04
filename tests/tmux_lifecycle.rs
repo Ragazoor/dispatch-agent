@@ -51,6 +51,9 @@ struct Fixture {
     // (and the pane processes holding cwds inside `dir`) dies before the temp
     // dir is unlinked.
     server: TmuxServer,
+    // Read by nothing: held purely as a drop guard so the temp dir survives
+    // until the fixture does. Dropping it unlinks `repo` and `board_log`.
+    #[allow(dead_code)]
     dir: tempfile::TempDir,
     /// The repo `task.repo_path` points at. Worktrees land in `<repo>/.worktrees`.
     repo: PathBuf,
@@ -862,96 +865,6 @@ fn killing_the_agent_window_leaves_the_worktree_intact() {
 // not skip step 1 when its worktree argument is `None` — control flow, so it sits
 // on the mock side of the split in docs/conventions.md
 // (`src/dispatch/tests.rs::teardown_task_kills_window_when_there_is_no_worktree`).
-
-// ---------------------------------------------------------------------------
-// Step 5 — main session
-// ---------------------------------------------------------------------------
-
-/// The main session deliberately gets no companion agent-tree pane: it has no
-/// task id and no worktree, so the tree would be permanently empty, and the
-/// window is covered by neither teardown rule. Specified in
-/// docs/specs/agent-tree.allium's `SplitAgentTreePaneOnAgentLaunch`
-/// ("Resolves MainSessionPaneScope").
-#[test]
-fn main_session_window_has_a_single_pane() {
-    let Some(fx) = setup_or_skip() else { return };
-
-    let window =
-        dispatch::create_main_session(fx.dir.path().to_str().unwrap(), &fx.server.runner())
-            .expect("create_main_session");
-
-    // Anchor on the session's own claude launch, so "one pane" is not observed
-    // before a companion split would have happened.
-    stub_for(&fx, "claude");
-    assert_eq!(
-        fx.server.pane_count(window.as_str()),
-        1,
-        "main session must not get a companion pane; panes: {:?}",
-        fx.server.pane_lefts(window.as_str())
-    );
-}
-
-/// Carrying no `@dispatch_dir` is what keeps the split-correction hook's
-/// `if-shell -F` guard inert for this window, so a user splitting it by hand
-/// gets a plain pane rather than one dragged into some task's worktree.
-#[test]
-fn splitting_the_main_session_window_is_never_corrected() {
-    let Some(fx) = setup_or_skip() else { return };
-    // Dispatch first: it installs the hook, and gives us a window that *does*
-    // fire it to anchor against.
-    let dispatched = fx.dispatch(TASK_ID);
-    let window =
-        dispatch::create_main_session(fx.dir.path().to_str().unwrap(), &fx.server.runner())
-            .expect("create_main_session");
-    assert_eq!(
-        fx.server.window_option(window.as_str(), "@dispatch_dir"),
-        "",
-        "main session must carry no @dispatch_dir"
-    );
-
-    // `None` for the start directory on both splits: naming one would make the
-    // hook skip them, and it is precisely the hook's behaviour under test here.
-    let main_log = fx.dir.path().join("main_split.log");
-    let main_pane = tmux::split_window_horizontal_running(
-        window.as_str(),
-        30,
-        &["sh", "-c", &capture_cmd(&main_log)],
-        None,
-        &fx.server.runner(),
-    )
-    .expect("split main session");
-
-    // Anchor: a split in the agent window *does* fire the hook, so by the time
-    // that pane has been moved into the worktree, anything the main-session
-    // split had coming would have arrived too.
-    let agent_log = fx.dir.path().join("agent_split.log");
-    let agent_pane = tmux::split_window_horizontal_running(
-        fx.window(TASK_ID).as_str(),
-        30,
-        &["sh", "-c", &capture_cmd(&agent_log)],
-        None,
-        &fx.server.runner(),
-    )
-    .expect("split agent window");
-    let worktree = canonical(&dispatched.worktree_path);
-    assert!(
-        tmux_harness::poll_until(|| canonical(&fx.server.pane_cwd(&agent_pane)) == worktree),
-        "anchor split was never corrected, so this test proves nothing"
-    );
-
-    assert_ne!(
-        canonical(&fx.server.pane_cwd(&main_pane)),
-        worktree,
-        "a split in the main-session window must not be pulled into a task's \
-         worktree"
-    );
-    let got = read_now(&main_log);
-    assert!(
-        got.trim().is_empty(),
-        "a split in the main-session window must receive nothing, got: {got:?}"
-    );
-    fx.assert_board_untouched();
-}
 
 // ---------------------------------------------------------------------------
 // Worktree start point — local vs. origin `<base>`

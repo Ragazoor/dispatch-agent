@@ -550,7 +550,6 @@ impl TuiRuntime {
         )));
         load_notifications_pref(&*database, &mut app).await;
         load_repo_filter(&*database, &mut app).await;
-        load_main_session(&*database, &mut app).await;
         for msg in [
             load_filter_presets(&*database, &mut app).await,
             apply_tmux_focus_warning(&*runner),
@@ -844,22 +843,6 @@ async fn execute_commands<B: Backend>(
 // ---------------------------------------------------------------------------
 // init load helpers — extracted from run_tui's startup block
 // ---------------------------------------------------------------------------
-
-async fn load_main_session(db: &dyn db::SettingsStore, app: &mut App) {
-    // Only the configured directory is persisted. The window identity is not
-    // stored — `:` derives liveness via a live tmux check on the fixed window
-    // name (see `exec_open_main_session`).
-    if let Some(dir) = db
-        .get_setting_string("main_session.dir")
-        .await
-        .ok()
-        .flatten()
-    {
-        if !dir.is_empty() {
-            app.set_main_session_dir(Some(dir));
-        }
-    }
-}
 
 async fn load_notifications_pref(db: &dyn db::SettingsStore, app: &mut App) {
     let enabled = db

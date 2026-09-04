@@ -20,8 +20,8 @@
 --           the board TUI's own split pane, which joins a whole agent window
 --           next to the kanban board (see split-pane.allium — a different pane,
 --           in a different window, with a different lifecycle);
---           agent-window creation itself and the main-session window (see
---           dispatch.allium); repository synchronisation and drift measurement,
+--           agent-window creation itself (see dispatch.allium); repository
+--           synchronisation and drift measurement,
 --           which run their own git commands for a different purpose (see
 --           repo-sync.allium).
 --
@@ -105,16 +105,15 @@ value AgentTreeNode {
 -- The companion pane inside one agent's tmux window. Created by splitting that
 -- window at creation time; toggled between shown and hidden by killing and
 -- re-splitting the pane. Its state is not persisted — it is re-derived from
--- live tmux, the same way dispatch.allium re-derives main-session liveness.
+-- live tmux, never from a persisted reference.
 entity AgentTreePane {
     -- The agent window this pane was split out of. One pane per window
     -- (see OneCompanionPanePerAgentWindow).
     window: core/TmuxWindow
 
     -- The task this pane renders. Required: a companion pane exists only for a
-    -- task-agent window. The main-session window has no task and gets no pane
-    -- at all — see SplitAgentTreePaneOnAgentLaunch's "Resolves
-    -- MainSessionPaneScope" note.
+    -- task-agent window; a window with no task gets no pane at all — see
+    -- SplitAgentTreePaneOnAgentLaunch's "Only task windows get a pane" note.
     --
     -- The task supplies two things the git query needs and nothing else can:
     -- its worktree (pane.root) and its base_branch. The latter is the NAME the
@@ -372,26 +371,13 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- launch because its companion pane could not open — consistent with
         -- BindAgentTreeToggle's best-effort binding.
         --
-        -- Resolves MainSessionPaneScope: the main-session window is EXCLUDED
-        -- from the split, so AgentLaunched is the only trigger that ever creates
-        -- a companion pane, and AgentTreePane.task is required rather than
-        -- optional. The main session has no task and so no worktree to root a
+        -- Only task windows get a pane: AgentLaunched is the only trigger that
+        -- ever creates a companion pane, and AgentTreePane.task is required
+        -- rather than optional. A window with no task has no worktree to root a
         -- tree at and no base branch to diff against; `dispatch agent-tree`
         -- takes a REQUIRED task id (src/cli/agent_tree.rs), so there is no id to
         -- launch it with in the first place. Such a pane would also be covered
         -- by neither pane-teardown rule below, since both key off a Task.
-        -- Consistency across the three window-creation paths was the original
-        -- motivation and is not worth a pane nothing can tear down.
-        --
-        -- The alternative the question also offered — inventing a non-task
-        -- identity for the main session — is not merely deferred but rejected:
-        -- it would require a renderer that accepts no task, a baseline chosen
-        -- from nowhere, and teardown rules keyed off something other than a
-        -- Task, to earn a tree of a directory the user is already looking at.
-        --
-        -- Asserted in tests/tmux_lifecycle.rs
-        -- (main_session_window_has_a_single_pane), so the absence is covered
-        -- rather than merely unimplemented.
 }
 
 rule HideAgentTreePane {
@@ -521,8 +507,8 @@ rule HideAgentTreePane {
         -- previously claimed: see "What this replaced" above.
         --
         -- A window name that doesn't parse as `task-<id>` (the inverse of
-        -- TmuxWindow::for_task — the board's own TUI window, the
-        -- unimplemented main-session window, anything else) never reaches the
+        -- TmuxWindow::for_task — the board's own TUI window, anything else)
+        -- never reaches the
         -- `exists pane` check at all: toggle_agent_tree_pane
         -- (src/dispatch/agents.rs) short-circuits to a no-op before issuing
         -- any tmux call, which stands in for "not exists pane" without a

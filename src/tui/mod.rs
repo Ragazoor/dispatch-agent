@@ -52,12 +52,6 @@ pub(in crate::tui) const PR_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// the map that the card no longer drew, or the reverse.
 pub(in crate::tui) const MESSAGE_FLASH_TTL: Duration = Duration::from_secs(30);
 
-/// Number of ticks between main-session liveness polls. At `TICK_INTERVAL` (2s)
-/// this is 10s — mirrors config.main_session_poll_interval (see
-/// docs/specs/core.allium config and dispatch.allium: MainSessionIndicator) and
-/// the DB-refresh fallback cadence.
-pub(in crate::tui) const MAIN_SESSION_POLL_TICKS: u64 = 5;
-
 /// Number of ticks between budget-snapshot reads. At `TICK_INTERVAL` (2s) this
 /// is 10s — mirrors config.budget_poll_interval (see docs/specs/core.allium
 /// config and dispatch.allium: TokenBudgetIndicator).
@@ -180,16 +174,6 @@ pub struct App {
     /// Spinner frame index (0..DISPATCH_SPINNER_FRAMES) for the per-card "dispatching…" indicator.
     /// Advanced by `Tick` only while `dispatching` is non-empty.
     pub(in crate::tui) spinner_tick: u8,
-    pub(in crate::tui) main_session_dir: Option<String>,
-    /// Whether the fixed "dispatch-main" tmux window is currently alive, as of
-    /// the last liveness poll. Drives the status-bar main-session badge. Derived
-    /// purely from a live tmux check (never a persisted reference); refreshed on
-    /// the tick loop every `MAIN_SESSION_POLL_TICKS`. See docs/specs/dispatch.allium:
-    /// MainSessionIndicator.
-    pub(in crate::tui) main_session_alive: bool,
-    /// Ticks elapsed since the last main-session liveness poll. Reset to 0 on
-    /// each poll; the poll fires when this reaches `MAIN_SESSION_POLL_TICKS`.
-    pub(in crate::tui) ticks_since_main_session_poll: u64,
     /// Latest budget snapshot read from `<data_dir>/rate-limits.json`. `None`
     /// when absent or unreadable — the steady state for non-subscription auth.
     /// Derived live, never persisted (dispatch.allium: TokenBudgetIndicator).
@@ -532,9 +516,6 @@ impl App {
             search: SearchState::default(),
             dispatching: HashMap::new(),
             spinner_tick: 0,
-            main_session_dir: None,
-            main_session_alive: false,
-            ticks_since_main_session_poll: 0,
             budget: None,
             ticks_since_budget_poll: 0,
             layout: LayoutCache::default(),
@@ -748,16 +729,6 @@ impl App {
     /// "Visibility Convention" section in CLAUDE.md.
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
         self.notifications_enabled = enabled;
-    }
-
-    pub fn main_session_dir(&self) -> Option<&str> {
-        self.main_session_dir.as_deref()
-    }
-
-    /// Bootstrap-only carve-out: populated by the runtime loader from
-    /// `main_session.dir` setting at startup. After bootstrap, set via Messages.
-    pub fn set_main_session_dir(&mut self, dir: Option<String>) {
-        self.main_session_dir = dir;
     }
 
     pub fn set_repo_filter(&mut self, filter: HashSet<String>) {

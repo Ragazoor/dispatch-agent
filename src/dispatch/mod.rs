@@ -19,10 +19,9 @@ mod trust;
 mod worktree;
 
 pub use agents::{
-    agent_tree_pane_id, companion_pane_ids, create_main_session, dispatch_agent,
-    fetch_verify_command, main_session_window_alive, prepare_inputs, prepare_inputs_with_epic_ctx,
-    quick_dispatch_agent, research_agent, resume_agent, resync_agent_tree_pane, run_agent_for_mode,
-    toggle_agent_tree_pane, DispatchInputs, MAIN_SESSION_WINDOW,
+    agent_tree_pane_id, companion_pane_ids, dispatch_agent, fetch_verify_command, prepare_inputs,
+    prepare_inputs_with_epic_ctx, quick_dispatch_agent, research_agent, resume_agent,
+    resync_agent_tree_pane, run_agent_for_mode, toggle_agent_tree_pane, DispatchInputs,
 };
 pub use finish::{finish_task, FinishContext, FinishError};
 // Test-only re-export: `prompts` is private, and the routing tests in

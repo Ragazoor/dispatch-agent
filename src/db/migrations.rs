@@ -155,6 +155,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (92, migrate_v92_add_phoenix),
     (93, migrate_v93_fix_root_epic_feed_role_uniqueness),
     (94, migrate_v94_add_feed_append_only),
+    (95, migrate_v95_drop_main_session_dir),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -2427,6 +2428,31 @@ pub(super) fn migrate_v91_clamp_feed_intervals(conn: &Connection) -> Result<()> 
                 "Migration v91: clamped {clamped} managed-feed interval setting(s) up to {floor}s"
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Delete the orphaned `main_session.dir` setting row.
+///
+/// The main session — a task-independent "dispatch-main" tmux window opened
+/// with `:` — was removed, and with it the only reader and writer of this key.
+/// Databases that ran the feature still carry the row, where it is now dead
+/// data that no code path can reach. Nothing else about the feature was
+/// persisted: the window identity was always re-derived from a live tmux check.
+///
+/// A missing settings table is tolerated so the migration is safe on any schema
+/// history, and it is idempotent — a second run finds nothing left to delete.
+pub(super) fn migrate_v95_drop_main_session_dir(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "settings") {
+        return Ok(());
+    }
+
+    let deleted = conn
+        .execute("DELETE FROM settings WHERE key = 'main_session.dir'", [])
+        .context("Failed to delete the main_session.dir setting (migration v95)")?;
+    if deleted > 0 {
+        tracing::info!("Migration v95: dropped the orphaned main_session.dir setting");
     }
 
     Ok(())

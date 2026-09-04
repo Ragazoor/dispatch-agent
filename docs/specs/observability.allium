@@ -308,7 +308,7 @@ rule KeypressRecordsFeatureUsage {
         -- is_text_entry covers the printable characters, backspace and caret
         -- motions of a text field, in every mode that has one — the task and
         -- epic title/description fields, the repo-path, base-branch,
-        -- main-session-dir, todo and preset-name fields, the board search
+        -- todo and preset-name fields, the board search
         -- query and the quick-dispatch filter. Their surrounding actions are
         -- still recorded: the key that opened the field, the cursor moves in
         -- a field that also drives a candidate list, and the submit or cancel

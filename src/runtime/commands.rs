@@ -23,10 +23,6 @@ pub(super) async fn dispatch(
             dispatch_settings(rt, app, cmd).await;
             vec![]
         }
-        MainSession(cmd) => {
-            dispatch_main_session(rt, app, cmd).await;
-            vec![]
-        }
         // Epic commands
         Epic(cmd) => {
             dispatch_epic(rt, app, cmd).await;
@@ -125,19 +121,6 @@ fn dispatch_split(
         FocusPane { pane_id } => drop(rt.exec_focus_split_pane(pane_id)),
         CheckPaneExists { pane_id } => drop(rt.exec_check_split_pane(&pane_id)),
         RespawnPane { pane_id } => drop(rt.exec_respawn_split_pane(&pane_id)),
-    }
-}
-
-async fn dispatch_main_session(
-    rt: &super::TuiRuntime,
-    app: &mut super::App,
-    cmd: crate::tui::commands::MainSessionCommand,
-) {
-    use crate::tui::commands::MainSessionCommand::*;
-    match cmd {
-        Open => rt.exec_open_main_session(app).await,
-        Create => rt.exec_create_main_session(app).await,
-        CheckLiveness => drop(rt.exec_check_main_session_liveness()),
     }
 }
 

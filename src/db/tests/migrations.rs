@@ -4454,3 +4454,58 @@ fn migration_v91_is_idempotent_and_survives_missing_tables() {
         .unwrap();
     assert_eq!(after, Some(crate::models::MIN_FEED_INTERVAL_SECS));
 }
+
+// ---------------------------------------------------------------------------
+// v95 — drop the orphaned main-session directory setting
+// ---------------------------------------------------------------------------
+
+/// The main session was removed, so `main_session.dir` is a row nothing reads
+/// or writes any more. Databases that ran the feature still carry it; the
+/// migration clears it out and leaves every other setting alone.
+#[test]
+fn v95_deletes_the_orphaned_main_session_dir_setting() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE settings (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL
+         );
+         INSERT INTO settings (key, value) VALUES
+           ('main_session.dir', '/home/user/code'),
+           ('default_branch', 'main');",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
+
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'main_session.dir'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0, "the orphaned main-session row must be gone");
+
+    let other: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'default_branch'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(other, "main", "an unrelated setting must not be touched");
+}
+
+/// Safe on a database that never had a settings table, and safe to run twice.
+#[test]
+fn migration_v95_is_idempotent_and_survives_a_missing_settings_table() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
+
+    conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+        .unwrap();
+
+    crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
+    crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
+}

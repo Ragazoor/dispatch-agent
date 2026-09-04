@@ -149,7 +149,6 @@ impl App {
                 | InputMode::InputEpicTitle
                 | InputMode::InputEpicDescription
                 | InputMode::InputBaseBranch
-                | InputMode::MainSessionDir
                 | InputMode::TodoTitle
                 | InputMode::TodoQuickAdd => self.handle_key_text_input(key),
                 InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
@@ -573,9 +572,6 @@ impl App {
                     InputMode::InputBaseBranch => {
                         Message::Input(crate::tui::messages::InputMessage::SubmitBaseBranch(value))
                     }
-                    InputMode::MainSessionDir => Message::MainSession(
-                        crate::tui::messages::MainSessionMessage::SubmitDir(value),
-                    ),
                     _ => Message::Input(crate::tui::messages::InputMessage::SubmitRepoPath(value)),
                 };
                 return self.update(msg);
@@ -602,9 +598,6 @@ impl App {
             )),
             InputMode::InputBaseBranch => self.update(Message::Input(
                 crate::tui::messages::InputMessage::SubmitBaseBranch(value),
-            )),
-            InputMode::MainSessionDir => self.update(Message::MainSession(
-                crate::tui::messages::MainSessionMessage::SubmitDir(value),
             )),
             InputMode::TodoTitle => self.update(Message::Todo(
                 crate::tui::messages::TodoMessage::SubmitTitle(value),

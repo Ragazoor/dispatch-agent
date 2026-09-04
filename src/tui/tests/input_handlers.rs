@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{test_tmux_window, EpicId, SubStatus, TaskId, TaskStatus, TaskTag};
-use crate::tui::commands::SettingsCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
@@ -2201,7 +2200,7 @@ fn handle_key_quick_dispatch_typing_j_filters_by_j() {
     assert_eq!(app.input.repo_cursor, 0);
 }
 
-// ── InputRepoPath / MainSessionDir digit-filtering regressions ──
+// ── InputRepoPath digit-filtering regression ──
 
 #[test]
 fn handle_key_input_repo_path_typing_digit_filters_not_selects() {
@@ -2219,21 +2218,6 @@ fn handle_key_input_repo_path_typing_digit_filters_not_selects() {
             Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
         )),
         "digit must not submit a repo path; cmds: {cmds:?}"
-    );
-    assert_eq!(app.input.buffer, "2");
-}
-
-#[test]
-fn handle_key_main_session_dir_typing_digit_filters_not_selects() {
-    let mut app = make_app();
-    app.board.repo_paths = vec!["/repo-1".to_string(), "/repo-2".to_string()];
-    app.input.mode = InputMode::MainSessionDir;
-    let cmds = app.handle_key(make_key(KeyCode::Char('2')));
-    assert!(
-        !cmds.iter().any(
-            |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, .. }) if key == "main_session.dir")
-        ),
-        "digit must not submit a main session dir; cmds: {cmds:?}"
     );
     assert_eq!(app.input.buffer, "2");
 }
@@ -3285,4 +3269,23 @@ fn a_draft_armed_at_the_tag_step_is_created_as_a_phoenix() {
     let draft = inserted_draft(&cmds).expect("the form creates the task");
     assert!(draft.phoenix, "the armed flag must survive to creation");
     assert_eq!(draft.tag, Some(TaskTag::Chore));
+}
+
+// ── Main session removal ──
+//
+// The main session (a task-independent "dispatch-main" tmux window opened with
+// `:`) was removed. `:` is now an unbound key in Normal mode: it must produce
+// no command at all, not even a usage event, and must not change the mode.
+#[test]
+fn colon_is_unbound_in_normal_mode() {
+    let mut app = App::new(vec![]);
+    app.input.mode = InputMode::Normal;
+
+    let cmds = app.handle_key(make_key(KeyCode::Char(':')));
+
+    assert!(
+        cmds.is_empty(),
+        "`:` should be inert in Normal mode, got {cmds:?}"
+    );
+    assert_eq!(app.input.mode, InputMode::Normal);
 }

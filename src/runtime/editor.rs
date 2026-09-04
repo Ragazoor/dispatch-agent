@@ -29,8 +29,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(300);
 /// tolerates before giving up and reporting "not alive".
 ///
 /// `tmux::has_window_or_assume_present` (query failure -> alive) is the right
-/// default for the other liveness call sites (`main_session_window_alive`,
-/// `exec_check_window`) because those are periodic re-checks — a false
+/// default for the other liveness call sites (`exec_check_window`) because
+/// those are periodic re-checks — a false
 /// "alive" there just delays detection by one tick. `watch_editor`'s loop
 /// below has no other exit condition, so treating a *permanently* broken
 /// tmux as alive forever would hang it indefinitely; bounding the retries

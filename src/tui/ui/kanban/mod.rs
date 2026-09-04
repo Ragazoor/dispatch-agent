@@ -20,8 +20,8 @@ mod tests;
 use super::input_form::{
     confirm_retry_lines, input_base_branch_lines, input_description_lines,
     input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
-    input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
-    FormStyles, PHOENIX_ARMED_TAG_STEP_LINES,
+    input_title_lines, input_wrap_up_mode_lines, quick_dispatch_lines, FormStyles,
+    PHOENIX_ARMED_TAG_STEP_LINES,
 };
 use super::palette::{
     header_label_focused, header_label_unfocused, mix, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
@@ -210,17 +210,6 @@ fn input_panel_height(app: &App, area_height: u16) -> u16 {
             let filtered = crate::tui::filtered_repos(&app.board.repo_paths, &app.input.buffer);
             let new_entry = crate::tui::has_new_repo_option(&app.input.buffer, &filtered);
             let n = filtered.len() + new_entry as usize;
-            let rows = n as u16 + 7;
-            rows.clamp(8, max_height)
-        }
-        InputMode::MainSessionDir => {
-            // header(1) + blank(1) + filter(1) + repos(N) + blank(1) + hint(1) + borders(2) = N + 7
-            let n = app
-                .board
-                .repo_paths
-                .iter()
-                .filter(|p| crate::tui::fuzzy_matches(p, &app.input.buffer))
-                .count();
             let rows = n as u16 + 7;
             rows.clamp(8, max_height)
         }
@@ -563,7 +552,6 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
         InputMode::InputBaseBranch => input_base_branch_lines(app, area, &styles),
         InputMode::InputWrapUpMode => input_wrap_up_mode_lines(app, &styles),
         InputMode::QuickDispatch => quick_dispatch_lines(app, area, &styles),
-        InputMode::MainSessionDir => main_session_dir_lines(app, area, &styles),
         InputMode::ConfirmRetry(id) => confirm_retry_lines(app, *id),
         InputMode::InputEpicTitle => input_epic_title_lines(app, area, &styles),
         InputMode::InputEpicDescription => input_epic_description_lines(app, &styles),
@@ -577,7 +565,6 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
 
     let block_title = match &app.input.mode {
         InputMode::QuickDispatch => " Quick Dispatch ",
-        InputMode::MainSessionDir => " Main Session ",
         InputMode::ConfirmRetry(_) => " Retry Agent ",
         _ if is_epic_input => " New Epic ",
         _ => " New Task ",

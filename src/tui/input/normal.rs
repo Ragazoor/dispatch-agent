@@ -331,15 +331,6 @@ impl App {
                 cmds
             }
 
-            KeyCode::Char(':') => {
-                // The runtime decides: jump to the main-session window if it is
-                // alive, otherwise open the picker to (re)select a directory.
-                vec![
-                    Command::MainSession(crate::tui::commands::MainSessionCommand::Open),
-                    key_event("open_main_session", ":"),
-                ]
-            }
-
             // [o] for origin: open the sync confirmation for the selected task's
             // repository (docs/specs/repo-sync.allium: rule PromptRepoSync).
             // Offered only while the drift segment is lit; with no drift the key

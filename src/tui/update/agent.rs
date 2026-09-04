@@ -200,7 +200,6 @@ impl App {
         cmds.extend(self.tick_pr_poll());
         cmds.extend(self.tick_split_pane_check());
         cmds.extend(self.tick_stale_learning());
-        cmds.extend(self.tick_main_session_poll());
         cmds.extend(self.tick_budget_poll());
         cmds.extend(self.tick_db_refresh());
 
@@ -426,20 +425,6 @@ impl App {
         vec![]
     }
 
-    /// Poll main-session liveness on a fixed multiple of the tick (not every
-    /// tick — the tmux check is cheap but not free). Drives the status-bar
-    /// main-session badge. See docs/specs/dispatch.allium: MainSessionIndicator.
-    fn tick_main_session_poll(&mut self) -> Vec<Command> {
-        self.ticks_since_main_session_poll = self.ticks_since_main_session_poll.saturating_add(1);
-        if self.ticks_since_main_session_poll >= crate::tui::MAIN_SESSION_POLL_TICKS {
-            self.ticks_since_main_session_poll = 0;
-            return vec![Command::MainSession(
-                crate::tui::commands::MainSessionCommand::CheckLiveness,
-            )];
-        }
-        vec![]
-    }
-
     /// Poll the budget snapshot file on a fixed multiple of the tick. Drives the
     /// top-row budget indicator. See docs/specs/dispatch.allium:
     /// TokenBudgetIndicator.
@@ -651,24 +636,6 @@ mod tick_tests {
 
         app.tick_status_ttl();
         assert_eq!(app.status.message.as_deref(), Some("hello"));
-    }
-
-    #[test]
-    fn main_session_poll_fires_every_n_ticks() {
-        let mut app = make_app();
-        // First N-1 ticks stay silent; the Nth emits a liveness check.
-        for _ in 0..(crate::tui::MAIN_SESSION_POLL_TICKS - 1) {
-            assert!(app.tick_main_session_poll().is_empty());
-        }
-        let cmds = app.tick_main_session_poll();
-        assert!(matches!(
-            cmds.as_slice(),
-            [Command::MainSession(
-                crate::tui::commands::MainSessionCommand::CheckLiveness
-            )]
-        ));
-        // Counter reset — the next tick is silent again.
-        assert!(app.tick_main_session_poll().is_empty());
     }
 
     #[test]

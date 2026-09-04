@@ -41,9 +41,6 @@ fn session_name_flag(task_id: TaskId) -> String {
 /// would reintroduce exactly the bug this exists to fix, and nothing would say
 /// so. Coming through here, forgetting it also drops `--plugin-dir` and
 /// `--name`, which fails loudly.
-///
-/// `create_main_session` deliberately does NOT use this: it opens a plain
-/// interactive session belonging to no task, so it has no identity to carry.
 fn agent_launch_flags(task_id: TaskId, worktree_path: &str, runner: &dyn ProcessRunner) -> String {
     format!(
         "{DISPATCH_PLUGIN_DIR}{}{}",
@@ -601,41 +598,6 @@ pub fn resume_agent(
     Ok(ResumeResult { tmux_window })
 }
 
-/// The fixed tmux window name used for the main claude session.
-pub const MAIN_SESSION_WINDOW: TmuxWindow = TmuxWindow::from_static("dispatch-main");
-
-/// Whether the fixed main-session window is currently alive: a live tmux check
-/// on [`MAIN_SESSION_WINDOW`], never a persisted reference. A tmux query error
-/// maps to "alive" (see `tmux::has_window_or_assume_present`) rather than
-/// "not alive", so a transient tmux hiccup never presents as the main session
-/// having disappeared. Shared by the `:` open path and the status-bar
-/// liveness poll so both agree on one definition. See docs/specs/dispatch.allium:
-/// MainSessionIndicator / OpenMainSession.
-pub fn main_session_window_alive(runner: &dyn ProcessRunner) -> bool {
-    tmux::has_window_or_assume_present(&MAIN_SESSION_WINDOW, runner)
-}
-
-/// Launch a plain interactive `claude` session in a new tmux window.
-///
-/// Unlike task agents, this session has no task context, no prompt file, and
-/// no `--permission-mode` flag — it opens as a plain interactive Claude Code
-/// session with dispatch plugins available.
-///
-/// Returns the name of the created tmux window.
-pub fn create_main_session(dir: &str, runner: &dyn ProcessRunner) -> Result<TmuxWindow> {
-    let window = MAIN_SESSION_WINDOW;
-
-    tmux::new_window(&window, dir, runner).context("failed to create main session tmux window")?;
-
-    let claude = runner.agent_binaries().claude_quoted();
-    tmux::send_keys(&window, &format!("{claude} {DISPATCH_PLUGIN_DIR}"), runner)
-        .context("failed to send keys to main session tmux window")?;
-
-    tracing::info!(%window, %dir, "main session created");
-
-    Ok(window)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -646,7 +608,7 @@ mod tests {
     #[test]
     fn resync_agent_tree_pane_noop_for_non_task_window() {
         let mock = MockProcessRunner::new(vec![]);
-        resync_agent_tree_pane(&test_tmux_window("dispatch-main"), &mock);
+        resync_agent_tree_pane(&test_tmux_window("edit-window"), &mock);
         assert!(
             mock.recorded_calls().is_empty(),
             "no tmux calls expected for a non-task window name"
@@ -777,80 +739,5 @@ mod tests {
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 5, "a respawn is still attempted");
         assert!(calls[3].1.contains(&"split-window".to_string()));
-    }
-
-    #[test]
-    fn main_session_window_alive_delegates_to_has_window_or_assume_present() {
-        // main_session_window_alive is a pure delegation to
-        // tmux::has_window_or_assume_present — the present/absent/query-failed
-        // branch logic itself is fully covered by that function's own tests
-        // in src/tmux.rs. This just confirms the query-failure default
-        // (assume alive) carries through the wrapper, since a false "gone"
-        // here would send the user to the reconfigure flow over a hiccup.
-        let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
-        assert!(main_session_window_alive(&mock));
-    }
-
-    #[test]
-    fn create_main_session_creates_tmux_window_in_given_dir() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // new-window
-            MockProcessRunner::ok(), // send-keys -l
-            MockProcessRunner::ok(), // send-keys Enter
-        ]);
-        let result = create_main_session("/home/user", &mock);
-        assert!(result.is_ok());
-        let window = result.unwrap();
-        assert_eq!(window, MAIN_SESSION_WINDOW);
-
-        let calls = mock.recorded_calls();
-        // First call: tmux new-window
-        assert!(calls[0].1.contains(&"new-window".to_string()));
-        assert!(calls[0].1.iter().any(|a| a.contains("/home/user")));
-        assert!(calls[0].1.iter().any(|a| a == MAIN_SESSION_WINDOW.as_str()));
-    }
-
-    #[test]
-    fn create_main_session_sends_claude_with_plugin_dir() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // new-window
-            MockProcessRunner::ok(), // send-keys -l
-            MockProcessRunner::ok(), // send-keys Enter
-        ]);
-        create_main_session("/home/user", &mock).unwrap();
-
-        let calls = mock.recorded_calls();
-        // send-keys call passes "claude <plugin_dir>" as the command
-        let all_args: Vec<String> = calls.iter().flat_map(|(_, args)| args.clone()).collect();
-        let has_plugin_dir = all_args
-            .iter()
-            .any(|a| a.contains("claude") && a.contains("--plugin-dir"));
-        assert!(
-            has_plugin_dir,
-            "expected claude with plugin dir in send-keys, got: {all_args:?}"
-        );
-    }
-
-    #[test]
-    fn create_main_session_launches_the_runners_claude_binary() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // new-window
-            MockProcessRunner::ok(), // send-keys -l
-            MockProcessRunner::ok(), // send-keys Enter
-        ])
-        .with_agent_binaries(AgentBinaries::stub());
-
-        create_main_session("/home/user", &mock).unwrap();
-
-        let calls = mock.recorded_calls();
-        let sent = calls[1]
-            .1
-            .iter()
-            .find(|a| a.contains("claude"))
-            .expect("send-keys payload naming claude");
-        assert!(
-            sent.starts_with("/stub/bin/claude-stub --plugin-dir"),
-            "main session must launch the runner's claude binary, got: {sent}"
-        );
     }
 }

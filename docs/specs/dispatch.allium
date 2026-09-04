@@ -843,7 +843,7 @@ rule ResumeTask {
     -- that no live tmux window exists: the field can go stale (a race, or a
     -- persist that never landed) while the window it used to name survives.
     -- Liveness is therefore re-checked live against tmux on the deterministic
-    -- window name, the same style as OpenMainSession's window_alive check.
+    -- window name.
     let window_alive = has_window(name: "task-" + task.id)
 
     ensures: task.tmux_window = core/TmuxWindow.created(name: "task-" + task.id)
@@ -881,9 +881,7 @@ rule ResumeTask {
         -- on that name (select-window, send-keys, kill-window — all resolved
         -- by exact name, see TmuxWindowTargetedExactly) refused as ambiguous.
         --
-        -- A tmux query failure maps window_alive to false, not true: unlike
-        -- OpenMainSession's fixed-window check (which defaults to alive, so a
-        -- transient hiccup never sends the user to reconfigure), here the safe
+        -- A tmux query failure maps window_alive to false, not true: the safe
         -- default is the one that reproduces the unconditional-create
         -- behaviour this rule always had before the check existed, rather
         -- than risking a task left with no live agent behind it.
@@ -947,69 +945,6 @@ rule RetryFresh {
         -- path. The unified prompt skeleton handles both has_plan = true
         -- (review-and-implement) and has_plan = false (spec-first)
         -- variants without any branch in this rule.
-}
-
--- == Main Session ==
---
--- The main session is a single, task-independent tmux window (a fixed
--- constant name, "dispatch-main") running an interactive Claude Code session
--- rooted at a user-chosen directory. Its window identity is NOT persisted:
--- liveness is re-derived on each open via a live tmux check. Only the chosen
--- directory is remembered (under the "main_session.dir" setting) as the
--- default for the next open.
-
-rule OpenMainSession {
-    when: OpenMainSession(user)
-
-    -- Liveness is checked live against tmux on the fixed window name, not read
-    -- from any stored reference.
-    let window_alive = main_session_window_alive()
-
-    ensures:
-        if window_alive:
-            MainSessionFocused(user: user)
-        else:
-            ConfigureMainSessionDir(user)
-
-    @guidance
-        -- Bound to `:` in the TUI. When the main-session window is alive,
-        -- focus (jump to) it — the user cannot reconfigure the directory while
-        -- the session runs. When it is not alive, the shared RepoPathPicker is
-        -- opened in MainSessionDir mode so the user (re)selects a directory
-        -- before the session is created. There is no separate reconfigure key:
-        -- reconfiguration happens implicitly on every open while no window is
-        -- alive. Because the window name is a fixed constant,
-        -- `main_session_window_alive` performs a live tmux check rather than
-        -- consulting a persisted window reference. A tmux query failure (e.g.
-        -- a transient error) maps to window_alive = true, not false, so a
-        -- tmux hiccup never sends the user to the reconfigure flow.
-}
-
-rule ConfigureMainSessionDir {
-    when: ConfigureMainSessionDir(user)
-
-    ensures: MainSessionDirPickerShown(user: user)
-
-    @guidance
-        -- Opens the shared RepoPathPicker (see surface) in MainSessionDir
-        -- mode. Confirming a non-empty path emits CreateMainSession with that
-        -- path; confirming an empty selection cancels and nothing happens.
-}
-
-rule CreateMainSession {
-    when: CreateMainSession(user, dir)
-
-    requires: dir != ""
-
-    ensures: core/TmuxWindow.created(name: "dispatch-main")
-    ensures: MainSessionFocused(user: user)
-
-    @guidance
-        -- Creates the main-session tmux window rooted at expand_tilde(dir) and
-        -- focuses it. The directory is persisted under the "main_session.dir"
-        -- setting as the default for the next open; the window identity itself
-        -- is not persisted (it is a fixed constant name, re-derived via the
-        -- live tmux liveness check in OpenMainSession).
 }
 
 ------------------------------------------------------------
@@ -1197,8 +1132,8 @@ surface RepoPathPicker {
 
     @guidance
         -- This surface appears during task creation (InputRepoPath),
-        -- epic creation (InputEpicRepoPath), main-session repo set
-        -- (MainSessionDir), and quick dispatch (QuickDispatch). It
+        -- epic creation (InputEpicRepoPath), and quick dispatch
+        -- (QuickDispatch). It
         -- replaces a plain text input with a fuzzy-filtered list of
         -- previously-used repo paths. The filtered list is ordered by
         -- recency (most recent first). When the user has not typed
@@ -1568,75 +1503,6 @@ surface UnprovisionedIndicator {
         -- indefinitely. Reachable by a manual forward move out of backlog, by
         -- a crash between the claim and provisioning, and by a dispatch
         -- worker that dies without reporting (see DispatchingTimeout).
-}
-
--- == Main Session ==
-
-surface MainSessionIndicator {
-    facing user: User
-
-    -- A passive main-session badge in the Normal-mode status bar. It signals
-    -- only existence + liveness of the "dispatch-main" window; it is NOT a
-    -- navigation target. Jumping to (or setting up) the main session stays on
-    -- the `:` key (see OpenMainSession). The badge carries no directory string.
-
-    -- Liveness is a live tmux check on the fixed "dispatch-main" window name,
-    -- never a persisted window reference — the same predicate OpenMainSession
-    -- uses, consistent with the Main Session rule that the window identity is
-    -- not persisted.
-    let window_alive = main_session_window_alive()
-
-    -- Whether a main-session directory has ever been configured (the
-    -- "main_session.dir" setting is present).
-    let dir_configured = main_session_dir_configured()
-
-    -- The badge is rendered only when the session is alive or a directory was
-    -- once configured; otherwise nothing is shown.
-    let visible = window_alive or dir_configured
-
-    exposes:
-        window_alive
-        dir_configured
-        visible
-
-    @guarantee AliveBadgeWhenWindowAlive
-        -- When window_alive, the badge is shown in the "alive" style (a filled
-        -- dot, rendered `● main`). Liveness alone drives the alive style: this
-        -- holds even in the edge case where dir_configured is false.
-
-    @guarantee NotRunningBadgeWhenConfiguredButDead
-        -- When not window_alive but dir_configured, the badge is shown in the
-        -- "not running" style (a hollow dot, rendered `○ main`).
-
-    @guarantee HiddenWhenNeverConfigured
-        -- When neither window_alive nor dir_configured, the badge is hidden.
-
-    @guarantee LivenessFromLiveTmuxCheck
-        -- window_alive is always derived from a live tmux check on the fixed
-        -- window name via main_session_window_alive(), never from a stored
-        -- window reference. The check runs off the event loop.
-
-    @guarantee LivenessRefreshedPeriodically
-        -- window_alive is re-evaluated on the Tick loop every
-        -- config.main_session_poll_interval (a fixed multiple of
-        -- config.tick_interval, mirroring the DB-refresh fallback cadence —
-        -- not every tick, since the check is cheap but not free). A refresh
-        -- that does not change window_alive does not force a redraw.
-
-    @guarantee PassiveNotNavigable
-        -- The badge is display-only. It is not selectable or focusable and
-        -- adds no navigation target; the main session is still reached only
-        -- via `:` (OpenMainSession).
-
-    @guidance
-        -- Prepended to the Normal-mode status bar in the same way as the
-        -- existing [active] / [flat] / [/search] badges, reusing that
-        -- well-understood pattern. Terse by design — no directory string,
-        -- because the directory is already shown and edited through the `:`
-        -- picker (RepoPathPicker in MainSessionDir mode). The badge's only job
-        -- is to signal existence + liveness; `:` remains the "jump or set up"
-        -- action. main_session_dir_configured() reads the "main_session.dir"
-        -- setting; main_session_window_alive() is the shared live tmux check.
 }
 
 surface TokenBudgetIndicator {
@@ -2060,8 +1926,8 @@ surface SandboxedAgentExecution {
 -- of them — killing the window, selecting it, renaming it, typing into it (the
 -- agent command, a resume `--continue`, a notification), reading its pane,
 -- joining it into the split pane, splitting a companion pane inside it, and
--- setting its @dispatch_dir option. It holds for the board and main-session
--- windows as much as for a task's.
+-- setting its @dispatch_dir option. It holds for the board window as much as
+-- for a task's.
 --
 -- Not a cosmetic imprecision: window names are "task-" + task.id (see
 -- DispatchTask, DispatchResearchTask, ResumeTask, RetryResume), so one task's

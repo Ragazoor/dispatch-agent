@@ -101,7 +101,7 @@ pub(in crate::tui::ui) struct FormStyles {
 /// Shows existing paths that fuzzy-match `buffer`, then appends a selectable
 /// new-path entry when `buffer` is non-empty and not an exact match for any
 /// filtered item. This is the shared rendering contract for all
-/// `RepoPathPicker` surfaces (InputRepoPath, MainSessionDir, QuickDispatch).
+/// `RepoPathPicker` surfaces (InputRepoPath, QuickDispatch).
 fn append_filtered_repos_with_new_entry<'a>(
     lines: &mut Vec<Line<'a>>,
     filtered: &[String],
@@ -435,51 +435,6 @@ pub(in crate::tui) fn input_wrap_up_mode_lines(
             styles.active,
         )),
         styles.hint,
-    )
-}
-
-fn repo_picker_lines<'a>(
-    app: &'a App,
-    area: Rect,
-    header: &'a str,
-    prefix: &'a str,
-    hint_text: &'a str,
-    styles: &FormStyles,
-) -> Vec<Line<'a>> {
-    let mut lines = vec![
-        Line::from(Span::styled(header, styles.active)),
-        Line::from(""),
-        caret_field(&format!("  {prefix}: "), app, area, styles.active),
-    ];
-    let filtered = crate::tui::filtered_repos(&app.board.repo_paths, &app.input.buffer);
-    append_filtered_repos_with_new_entry(
-        &mut lines,
-        &filtered,
-        &app.input.buffer,
-        app.input.repo_cursor,
-        &RepoListCtx {
-            height_offset: 7,
-            area_height: area.height,
-            hint: styles.hint,
-        },
-    );
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(hint_text, styles.hint)));
-    lines
-}
-
-pub(in crate::tui) fn main_session_dir_lines<'a>(
-    app: &'a App,
-    area: Rect,
-    styles: &FormStyles,
-) -> Vec<Line<'a>> {
-    repo_picker_lines(
-        app,
-        area,
-        "  Main session — base repo:",
-        "Path",
-        "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        styles,
     )
 }
 

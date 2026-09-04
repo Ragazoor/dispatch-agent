@@ -162,8 +162,6 @@ pub enum Message {
     Todo(crate::tui::messages::TodoMessage),
     /// Feed-epic refresh messages — see [`crate::tui::messages::FeedMessage`].
     Feed(crate::tui::messages::FeedMessage),
-    /// Main session setup messages — see [`crate::tui::messages::MainSessionMessage`].
-    MainSession(crate::tui::messages::MainSessionMessage),
     /// Budget-indicator messages — see [`crate::tui::messages::BudgetMessage`].
     Budget(crate::tui::messages::BudgetMessage),
 }
@@ -211,8 +209,6 @@ pub enum Command {
     RepoSync(crate::tui::commands::RepoSyncCommand),
     /// PR flow side-effect commands — see [`crate::tui::commands::PrCommand`].
     Pr(crate::tui::commands::PrCommand),
-    /// Main session side-effect commands — see [`crate::tui::commands::MainSessionCommand`].
-    MainSession(crate::tui::commands::MainSessionCommand),
     /// Background learning-maintenance side-effect commands — see
     /// [`crate::tui::commands::LearningCommand`].
     Learning(crate::tui::commands::LearningCommand),
@@ -295,7 +291,6 @@ pub enum InputMode {
     /// armed at [`InputMode::InputTag`] (CreateTask: PhoenixArming, in
     /// `docs/specs/tasks.allium`).
     InputWrapUpMode,
-    MainSessionDir,
     /// In-view title input for adding or editing a personal TODO item.
     TodoTitle,
     /// Board quick-add input for personal TODOs.
@@ -324,10 +319,7 @@ impl InputMode {
     pub fn is_repo_picker(&self) -> bool {
         matches!(
             self,
-            InputMode::InputRepoPath
-                | InputMode::MainSessionDir
-                | InputMode::QuickDispatch
-                | InputMode::InputBaseBranch
+            InputMode::InputRepoPath | InputMode::QuickDispatch | InputMode::InputBaseBranch
         )
     }
 }

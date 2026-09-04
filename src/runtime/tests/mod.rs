@@ -4,9 +4,7 @@ use crate::models::test_tmux_window;
 
 // `db` is the concrete `Arc<Database>` in this fixture (see `test_db`), so the
 // store traits must be in scope for their methods to resolve on it.
-use crate::db::{
-    CreateLearningRow, CreateTaskRequest, Database, EpicCrud, EpicRead, TaskCrud, TaskPatch,
-};
+use crate::db::{CreateTaskRequest, Database, EpicCrud, EpicRead, TaskCrud, TaskPatch};
 use crate::dispatch::mock_sequence::DispatchScript;
 use crate::process::MockProcessRunner;
 use crate::tui::commands::SettingsCommand;
@@ -768,7 +766,6 @@ async fn exec_save_repo_path_expands_tilde() {
 mod command_dispatch;
 mod event_loop;
 mod feeds;
-mod main_session;
 mod misc;
 mod refresh;
 mod split_mode;

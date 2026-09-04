@@ -43,7 +43,6 @@
 | `P` | Open the personal TODO overlay |
 | `t` | Add a TODO linked to the selected card, using the card's title |
 | `r` | Refresh a feed epic — the selected epic card if it has a feed command, otherwise the feed epic you are inside. Does nothing elsewhere |
-| `:` | Open the main session — jump to it if its tmux window is alive, otherwise pick a directory (reconfigure) and open it there. The status bar shows a passive badge: `● main` when the session is running, `○ main` when a directory is configured but no session is running |
 | `o` | Sync the selected task's repository with origin on its default branch: merge whatever it is behind by, push whatever it is ahead by, after a confirmation. Offered only while the status bar's drift segment is lit (`main ↑3↓1`); a clean or unmeasurable repository shows no segment and the key does nothing. See `docs/specs/repo-sync.allium` |
 
 ### Epics
@@ -199,7 +198,6 @@ updating a task.
 - **Status TTL** (5s): `STATUS_MESSAGE_TTL` in `src/tui/mod.rs` — transient status bar messages auto-clear.
 - **PR poll** (30s): `PR_POLL_INTERVAL` in `src/tui/mod.rs` — polls PR status for tasks in review.
 - **Message flash** (30s): `MESSAGE_FLASH_TTL` in `src/tui/mod.rs` — how long a task's card keeps flashing after it sends or receives a native cross-session message (task #4098; warm fill, plus a direction glyph — envelope for received, outgoing arrow for sent, both if it did both). The border is the resting neutral, never hued. Read by *both* `tick_message_flash` (the sweep, `src/tui/update/agent.rs`, which sweeps `AgentTracking::message_flash`/`message_flash_sent`) and the card renderer; they must share it or the map and the screen diverge. See "Message flash" in `docs/specs/core.allium`.
-- **Main-session poll** (5 ticks / 10s): `MAIN_SESSION_POLL_TICKS` in `src/tui/mod.rs` — tick-driven tmux liveness check behind the main-session status-bar indicator; wired in `handle_tick` (`src/tui/update/agent.rs`), mirrors `config.main_session_poll_interval` in `docs/specs/core.allium`.
 - **Default feed interval** (60s): `DEFAULT_FEED_INTERVAL` in `src/feed/mod.rs` — cadence for a feed epic with no explicit `feed_interval_secs`. Mirrors `config.default_feed_interval` in `docs/specs/core.allium`. Must never fall below the floor below; `the_default_interval_clears_the_floor` asserts it.
 - **Minimum feed interval** (60s): `MIN_FEED_INTERVAL_SECS` in `src/models/interval.rs` — the floor under every feed cadence, enforced once in the service (`validate_feed_interval`) and again as a read-side refusal in `FeedRunner`. Mirrors `config.min_feed_interval`; see "Interval literals" in `docs/specs/core.allium` for why it is not in the interval grammar.
 - **gg-chord timeout** (150ms): `GG_CHORD_TIMEOUT` in `src/tui/mod.rs` — double-tap window for the `gg` jump-to-top keybinding.

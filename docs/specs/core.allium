@@ -720,7 +720,6 @@ config {
     message_flash_ttl: Duration = 30.seconds
     notifications_enabled: Boolean = false
     pr_poll_interval: Duration = 30.seconds
-    main_session_poll_interval: Duration = 10.seconds   -- cadence for the live tmux liveness check behind the main-session status-bar indicator (see dispatch.allium: MainSessionIndicator); a fixed multiple of tick_interval
     budget_poll_interval: Duration = 10.seconds
     budget_stale_after: Duration = 10.minutes
     -- The floor under every feed cadence, however it is spelled and whoever
@@ -2270,11 +2269,11 @@ value FlattenedView {
 --   nothing of its own to draw there.
 --
 --   Active: a mode whose form the panel itself draws (new task, new epic,
---   quick dispatch, main-session-dir picker, retry confirmation, and so
---   on) reserves enough rows to show that form, bordered and titled for
+--   quick dispatch, retry confirmation, and so on) reserves enough rows
+--   to show that form, bordered and titled for
 --   the mode. Most such modes need a fixed number of rows; a mode that
---   lists repositories (quick dispatch, main-session-dir picker, or the
---   repo-path prompt with an empty query) grows the panel to fit every
+--   lists repositories (quick dispatch, or the repo-path prompt with an
+--   empty query) grows the panel to fit every
 --   matching repo instead, up to the space the board can spare — the
 --   kanban board never drops below a minimum height to make room for it.
 --

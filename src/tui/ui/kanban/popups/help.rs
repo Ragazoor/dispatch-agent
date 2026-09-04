@@ -110,8 +110,6 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
         Line::from(vec![
             Span::styled("  [p]", key),
             Span::styled(" open PR   ", desc),
-            Span::styled("[:]", key),
-            Span::styled(" main session   ", desc),
             Span::styled("[o]", key),
             Span::styled(" sync repo", desc),
         ]),

@@ -50,9 +50,6 @@ pub(in crate::tui) fn dispatch(app: &mut App, msg: Message) -> Vec<Command> {
         Message::Feed(fm) => fm.route(app),
         Message::Todo(tm) => tm.route(app),
 
-        // ── Main session ──
-        Message::MainSession(mm) => mm.route(app),
-
         // ── Budget indicator ──
         Message::Budget(bm) => bm.route(app),
     }

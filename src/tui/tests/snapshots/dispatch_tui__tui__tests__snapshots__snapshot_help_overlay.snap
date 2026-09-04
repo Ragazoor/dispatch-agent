@@ -21,7 +21,7 @@ expression: rendered
                         ║  [x] done / archive   [D] quick dispatch                             ║
                         ║  [v] select   [a] select all   [/] search titles/ids                 ║
                         ║  [f] filter repos   [A] active only   [F] flat view                  ║
-                        ║  [p] open PR   [:] main session   [o] sync repo                      ║
+                        ║  [p] open PR   [o] sync repo                                         ║
                         ║  [s] toggle split (then [Space] swaps into pane)   [T] detach        ║
                         ║  [r] refresh feed   [U] auto-dispatch   [R] by repo                  ║
                         ║  [P] todos   [t] add todo from card   [N] notifications              ║

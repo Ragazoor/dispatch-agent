@@ -14,8 +14,8 @@
 use super::*;
 use crate::models::test_tmux_window;
 use crate::tui::commands::{
-    EditorCommand, FeedCommand, MainSessionCommand, PersistFields, PrCommand, RepoSyncCommand,
-    SplitCommand, SystemCommand, TaskCommand, TodoCommand,
+    EditorCommand, FeedCommand, PersistFields, PrCommand, RepoSyncCommand, SplitCommand,
+    SystemCommand, TaskCommand, TodoCommand,
 };
 
 /// Run one command through the real dispatcher and return its follow-on
@@ -300,7 +300,7 @@ async fn dispatch_persist_setting_writes_both_kinds() {
         &rt,
         &mut app,
         Command::Settings(SettingsCommand::PersistStringSetting {
-            key: "main_session_dir".into(),
+            key: "test_string_setting".into(),
             value: "/main".into(),
         }),
     )
@@ -315,7 +315,7 @@ async fn dispatch_persist_setting_writes_both_kinds() {
     );
     assert_eq!(
         rt.database
-            .get_setting_string("main_session_dir")
+            .get_setting_string("test_string_setting")
             .await
             .unwrap()
             .as_deref(),
@@ -1219,68 +1219,6 @@ async fn dispatch_repo_sync_sync_reports_a_failure_the_refresh_arm_cannot() {
     }
 }
 
-// --- MainSessionCommand ------------------------------------------------
-
-#[tokio::test]
-async fn dispatch_main_session_open_falls_back_to_the_picker_when_no_window_is_alive() {
-    // has_window → false (empty listing)
-    let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
-    // A previously-configured dir must not stop the picker re-prompting.
-    h.app.set_main_session_dir(Some("/home/user".to_string()));
-
-    h.dispatch(Command::MainSession(MainSessionCommand::Open))
-        .await;
-
-    assert_eq!(h.app.mode(), &crate::tui::InputMode::MainSessionDir);
-    assert!(
-        !h.mock
-            .flattened_calls()
-            .iter()
-            .any(|c| c.contains("new-window")),
-        "Open never creates a window — that is Create's job: {:?}",
-        h.mock.flattened_calls()
-    );
-}
-
-#[tokio::test]
-async fn dispatch_main_session_create_without_a_configured_dir_errors_and_runs_nothing() {
-    let mut h = quiet_harness().await;
-
-    h.dispatch(Command::MainSession(MainSessionCommand::Create))
-        .await;
-
-    let err = h.app.error_popup().unwrap_or_default();
-    assert!(
-        err.contains("Main session directory not configured"),
-        "got: {err:?}"
-    );
-    assert!(
-        h.mock.recorded_calls().is_empty(),
-        "an unconfigured create must not reach tmux at all"
-    );
-}
-
-#[tokio::test]
-async fn dispatch_main_session_check_liveness_reports_the_live_window() {
-    let mut h = harness(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"dispatch-main\n"),
-    ]))
-    .await;
-
-    h.dispatch(Command::MainSession(MainSessionCommand::CheckLiveness))
-        .await;
-
-    assert!(
-        matches!(
-            h.next_msg().await,
-            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
-                true
-            ))
-        ),
-        "the poll must report the window it found"
-    );
-}
-
 // --- FeedCommand -------------------------------------------------------
 
 #[tokio::test]
@@ -2065,7 +2003,6 @@ fn every_command_sub_enum_is_named_by_this_module() {
             Command::Editor(_) => "Editor",
             Command::Feed(_) => "Feed",
             Command::Settings(_) => "Settings",
-            Command::MainSession(_) => "MainSession",
             Command::Epic(_) => "Epic",
             Command::System(_) => "System",
             Command::RepoFilter(_) => "RepoFilter",
@@ -2091,7 +2028,6 @@ fn every_command_sub_enum_is_named_by_this_module() {
             epic_title: String::new(),
         }),
         Command::Settings(SettingsCommand::SaveRepoPath(String::new())),
-        Command::MainSession(MainSessionCommand::CheckLiveness),
         Command::Epic(crate::tui::commands::EpicCommand::RefreshFromDb),
         Command::System(SystemCommand::OpenInBrowser { url: String::new() }),
         Command::RepoFilter(crate::tui::commands::RepoFilterCommand::DeleteRepoPath(

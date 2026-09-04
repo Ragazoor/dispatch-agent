@@ -46,25 +46,6 @@ fn hint(text: impl Into<Line<'static>>, color: Color) -> (Line<'static>, Style) 
     (text.into(), Style::default().fg(color))
 }
 
-/// Build the passive main-session badge for the status bar, or `None` when it
-/// should be hidden. Three states (docs/specs/dispatch.allium: MainSessionIndicator):
-/// alive → `● main` (green); configured-but-not-alive → `○ main` (dim); neither
-/// → hidden. Liveness is authoritative: an alive window shows the badge even if
-/// no directory was ever configured.
-fn main_session_badge(app: &App) -> Option<Vec<Span<'static>>> {
-    let (glyph, color) = if app.main_session_alive {
-        ("● main ", GREEN)
-    } else if app.main_session_dir().is_some() {
-        ("○ main ", MUTED)
-    } else {
-        return None;
-    };
-    Some(vec![Span::styled(
-        glyph,
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    )])
-}
-
 /// Build the repo-drift segment for the status bar, or `None` when it should be
 /// hidden (docs/specs/repo-sync.allium: surface RepoDriftIndicator).
 ///
@@ -218,17 +199,6 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::InputWrapUpMode => {
             hint_text(app, "Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip", YELLOW)
         }
-        InputMode::MainSessionDir => {
-            let line = crate::tui::ui::caret_field_line(
-                area.width,
-                "Main session directory:  ",
-                "  [Enter] open  [Esc] cancel",
-                &app.input.buffer,
-                app.input.caret,
-                Style::default().fg(CYAN),
-            );
-            (line, Style::default())
-        }
         InputMode::ReparentEpic(_) => hint(
             "Select new parent: navigate tree above, Enter to select",
             PURPLE,
@@ -364,9 +334,6 @@ fn normal_status_line(app: &App) -> (Line<'static>, Style) {
     }
     if let Some(segment) = repo_drift_segment(app.selected_repo_sync_state()) {
         prepend(&mut spans, segment);
-    }
-    if let Some(badge) = main_session_badge(app) {
-        prepend(&mut spans, badge);
     }
     if app.board.todo_open_count > 0 {
         spans.push(Span::styled(
