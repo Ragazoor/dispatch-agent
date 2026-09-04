@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::models::{extract_github_repo, ReviewDecision};
-use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
+use crate::process::{stderr_str, stdout_str, ProcessRunner, SUBPROCESS_TIMEOUT};
 
 mod agents;
 mod allium_specs;
@@ -35,16 +35,6 @@ pub use split_panes::{join_task_window_into_pane, swap_task_window_into_pane};
 pub(crate) use trust::{claude_json_path, is_trusted_at, trust_at};
 pub(crate) use worktree::PROVISION_MAX_SUBPROCESS_CALLS;
 pub use worktree::{branch_from_worktree, teardown_task, validate_repo_path, TeardownFailure};
-
-/// Extract stderr from a process `Output` as a trimmed `String`.
-pub(super) fn stderr_str(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).trim().to_string()
-}
-
-/// Extract stdout from a process `Output` as a trimmed `String`.
-pub(super) fn stdout_str(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
 
 // ---------------------------------------------------------------------------
 // PR types

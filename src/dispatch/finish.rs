@@ -5,7 +5,7 @@ use crate::models::expand_tilde;
 use crate::process::ProcessRunner;
 
 use super::git_output::is_rebase_conflict;
-use super::{stderr_str, stdout_str};
+use crate::process::{stderr_str, stdout_str};
 
 /// Errors from the finish (rebase + cleanup) operation.
 #[derive(Debug)]

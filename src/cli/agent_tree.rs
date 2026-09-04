@@ -48,13 +48,21 @@ use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
 /// poll timeout, so a key press and a plain timer tick share one wait.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
-/// How long one git query may run before it is killed and treated as a failure
-/// — `config.agent_tree_git_timeout` in the spec.
+/// How long ONE git command may run before it is killed and treated as a
+/// failure — `config.agent_tree_git_timeout` in the spec.
 ///
 /// Deliberately far below [`crate::process::SUBPROCESS_TIMEOUT`], which the
 /// board's other git calls use. Those run on a worker while the TUI stays live;
-/// these run inline in this loop, so the timeout is also the longest this pane
-/// can ignore a keypress.
+/// these run inline in this loop, so the timeout bounds how long this pane can
+/// ignore a keypress.
+///
+/// The bound is PER COMMAND, and a tick runs up to five of them
+/// ([`git_changes`]), so the arithmetic worst case is five times this. Only two
+/// of the five can realistically reach it: `diff` and `ls-files` touch the
+/// index, and a lock the agent's own git holds is by far the commonest cause of
+/// a slow query. The three `merge-base` probes walk refs and objects only and
+/// take no lock, so the practical ceiling is unchanged by the baseline
+/// resolution.
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A one-line failure notice, tagged with which of the two writers set it.
@@ -154,16 +162,123 @@ pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
     to_items(&root.children, &mut Vec::new())
 }
 
-/// Run the two git queries behind the tree and return everything they reported,
+/// The commit where this worktree forked from `git_ref`, or git's own error if
+/// the ref does not resolve.
+fn merge_base(root: &str, git_ref: &str, runner: &dyn ProcessRunner) -> Result<String> {
+    let sha = run_git(runner, &["-C", root, "merge-base", "HEAD", git_ref])?
+        .trim()
+        .to_string();
+    // Git prints a commit id whenever it exits zero, so this is defensive
+    // rather than reachable — but an empty string would be handed to `git diff`
+    // as its baseline, where it means something else entirely. Soft-fail into
+    // "this ref is not a candidate" instead.
+    if sha.is_empty() {
+        return Err(anyhow!("git: no common ancestor of HEAD and {git_ref}"));
+    }
+    Ok(sha)
+}
+
+/// Whether `ancestor` is an ancestor of `descendant`.
+///
+/// `merge-base --is-ancestor` answers with an exit code and no output: 0 for
+/// yes, 1 for no. Any other code — or a git that could not be spawned, or one
+/// that overran [`GIT_TIMEOUT`] — is not an answer, and is reported as a
+/// failure rather than folded into "no".
+///
+/// That distinction is load-bearing. "No" keeps the LOCAL fork point, so
+/// reading an unanswered probe as "no" would silently reinstate exactly the
+/// mis-attribution `AgentTreeBaselineIsTaskBaseBranch` exists to forbid — and
+/// present it as a correct tree, with no notice and no red border. A failure
+/// instead reaches `AgentTreeGitFailureKeepsLastGoodTree`, which keeps the last
+/// good tree and says so.
+fn is_ancestor(
+    root: &str,
+    ancestor: &str,
+    descendant: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<bool> {
+    let output = runner
+        .run_with_timeout(
+            "git",
+            &[
+                "-C",
+                root,
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            GIT_TIMEOUT,
+        )
+        .context("could not run git")?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(git_error(&output)),
+    }
+}
+
+/// Resolve the baseline the tree measures against: this worktree's fork point
+/// from `base_branch` — step 1 of the spec's `AgentTreeGitQuery`.
+///
+/// A base branch is a NAME, and a repo can hold two refs under it: the local
+/// branch and its remote-tracking counterpart. Dispatch branches a worktree
+/// from whichever of the two is ahead at provision time
+/// (`crate::dispatch::worktree`'s `select_start_point`), and the two drift in
+/// BOTH directions during normal operation — a base branch the human has not
+/// pulled leaves local behind, while a wrap-up that fast-forwards local without
+/// pushing leaves it ahead. So each ref is probed and the fork point nearer
+/// HEAD wins; see the spec's `AgentTreeBaselineIsTaskBaseBranch` for why
+/// picking either ref unconditionally mis-attributes other people's commits to
+/// the agent.
+///
+/// The remote ref comes from [`crate::git::origin_ref`], the crate's one
+/// definition of it — deliberately the same one `select_start_point` reaches
+/// through, so the two cannot disagree about which ref a worktree branched
+/// from. In a repo whose remote is named anything else that ref never
+/// resolves, and the baseline falls back to the local branch alone, with the
+/// stale-branch mis-attribution that implies.
+///
+/// A ref that does not resolve is simply not a candidate: a base branch never
+/// checked out locally is ordinary and must leave the pane working. Only when
+/// NEITHER resolves is there no baseline, and then the LOCAL branch's error is
+/// the one returned — that is the name the user put on the task, so it is the
+/// one they can act on. A ranking probe that could not answer is a different
+/// thing and fails the whole query; see [`is_ancestor`].
+fn fork_point(root: &str, base_branch: &str, runner: &dyn ProcessRunner) -> Result<String> {
+    let local = merge_base(root, base_branch, runner);
+    let remote = merge_base(root, &crate::git::origin_ref(base_branch), runner);
+
+    match (local, remote) {
+        // Nearness is ancestry, not commit count. Equal fork points need no
+        // ranking, so the probe is skipped — that is the ordinary case, where
+        // the two refs agree. Where neither is an ancestor of the other the
+        // refs have truly diverged, no choice is right, and the spec settles it
+        // by fixed rule: the local ref wins.
+        (Ok(local), Ok(remote)) => {
+            if local != remote && is_ancestor(root, &local, &remote, runner)? {
+                Ok(remote)
+            } else {
+                Ok(local)
+            }
+        }
+        (Ok(local), Err(_)) => Ok(local),
+        (Err(_), Ok(remote)) => Ok(remote),
+        (Err(local_err), Err(_)) => Err(local_err),
+    }
+}
+
+/// Run the git queries behind the tree and return everything they reported,
 /// with paths relative to `root`.
 ///
-/// The pair is the spec's `AgentTreeGitQuery`:
+/// The sequence is the spec's `AgentTreeGitQuery`:
 ///
-///   1. `git diff --name-status --no-renames -z --merge-base <base>` — every
-///      tracked change against the merge-base of `base_branch` and HEAD,
-///      committed or not, because the diff is taken against the WORKING TREE.
-///      An agent that commits mid-session does not watch its work vanish.
-///   2. `git ls-files --others --exclude-standard -z` — files the agent created
+///   1. [`fork_point`] — resolve the baseline from the task's base branch.
+///   2. `git diff --name-status --no-renames -z <fork point>` — every tracked
+///      change against that baseline, committed or not, because the diff is
+///      taken against the WORKING TREE. An agent that commits mid-session does
+///      not watch its work vanish.
+///   3. `git ls-files --others --exclude-standard -z` — files the agent created
 ///      and has not staged, which a diff cannot see. All of them are Added.
 ///
 /// Rename detection is off (`--no-renames`): with it on a rename is one entry
@@ -171,15 +286,16 @@ pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
 /// express. Off, git reports the same rename as a delete plus an add — which is
 /// both true and what a file tree should show.
 ///
-/// `-z` on both is load-bearing, not a style choice: git's default output
-/// C-quotes any path containing a non-ASCII byte and separates fields with a
-/// tab, so `src/é.rs` would arrive as `"src/\303\251.rs"` and render as that
-/// literal string. See [`parse_name_status`] for the full reasoning.
+/// `-z` on both path-emitting queries is load-bearing, not a style choice:
+/// git's default output C-quotes any path containing a non-ASCII byte and
+/// separates fields with a tab, so `src/é.rs` would arrive as
+/// `"src/\303\251.rs"` and render as that literal string. See
+/// [`parse_name_status`] for the full reasoning.
 ///
 /// A path both queries name (`git rm --cached foo`) is resolved by `build_tree`
 /// on precedence, not on the order these two run in.
 ///
-/// Both commands are read-only: nothing here fetches, commits, stages or writes
+/// Every command is read-only: nothing here fetches, commits, stages or writes
 /// to the index, which is what keeps the pane's `ReadOnlyObservation` guarantee
 /// true while it runs git against a worktree an agent is actively using.
 pub fn git_changes(
@@ -188,6 +304,7 @@ pub fn git_changes(
     runner: &dyn ProcessRunner,
 ) -> Result<Vec<GitFileChange>> {
     let root = root.to_string_lossy().into_owned();
+    let baseline = fork_point(&root, base_branch, runner)?;
 
     let diff = run_git(
         runner,
@@ -198,8 +315,7 @@ pub fn git_changes(
             "--name-status",
             "--no-renames",
             "-z",
-            "--merge-base",
-            base_branch,
+            &baseline,
         ],
     )?;
     let untracked = run_git(
@@ -232,15 +348,22 @@ fn run_git(runner: &dyn ProcessRunner, args: &[&str]) -> Result<String> {
         .run_with_timeout("git", args, GIT_TIMEOUT)
         .context("could not run git")?;
     if !output.status.success() {
-        let stderr = stderr_str(&output);
-        let detail = stderr
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or("git failed");
-        return Err(anyhow!("git: {detail}"));
+        return Err(git_error(&output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Git's own first line of stderr, as an error. Shared by every caller here
+/// because that line is what reaches the user's border and all of them need it
+/// to say the same kind of thing.
+fn git_error(output: &std::process::Output) -> anyhow::Error {
+    let stderr = stderr_str(output);
+    let detail = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("git failed");
+    anyhow!("git: {detail}")
 }
 
 /// Tree-widget navigation/expansion state, plus tracking of which
@@ -1419,33 +1542,85 @@ mod tests {
         assert_eq!(rig.press(KeyCode::Char('q')), KeyAction::Exit);
     }
 
-    // ---- git_changes: the two commands ------------------------------------
+    // ---- git_changes: baseline resolution, diff, untracked listing --------
 
     use crate::process::MockProcessRunner;
+
+    /// Fork point of HEAD with the LOCAL base branch, in every rig below.
+    const LOCAL_FORK: &str = "1111111111111111111111111111111111111111";
+    /// Fork point of HEAD with the REMOTE-TRACKING base ref.
+    const REMOTE_FORK: &str = "2222222222222222222222222222222222222222";
 
     /// A `-z` stream: NUL after every field, exactly as git emits it.
     fn nul(fields: &[&str]) -> String {
         fields.iter().map(|f| format!("{f}\0")).collect()
     }
 
-    /// Both git commands succeed, with the given `-z` stdout, in call order.
-    /// `diff` alternates status and path; `untracked` is bare paths.
-    fn git_rig(diff: &[&str], untracked: &[&str]) -> MockProcessRunner {
-        MockProcessRunner::new(vec![
+    /// One `git merge-base` answer, newline-terminated as git writes it.
+    fn sha(commit: &str) -> Result<std::process::Output> {
+        MockProcessRunner::ok_with_stdout(format!("{commit}\n").as_bytes())
+    }
+
+    /// The diff and the untracked listing, in call order. `diff` alternates
+    /// status and path; `untracked` is bare paths.
+    fn changes_out(diff: &[&str], untracked: &[&str]) -> Vec<Result<std::process::Output>> {
+        vec![
             MockProcessRunner::ok_with_stdout(nul(diff).as_bytes()),
             MockProcessRunner::ok_with_stdout(nul(untracked).as_bytes()),
+        ]
+    }
+
+    /// The two fork-point probes answering `local` and `remote`, then the diff
+    /// and the untracked listing. Covers every rig whose probes need no
+    /// ranking — either they agree, or one of them failed.
+    fn probe_rig(
+        local: Result<std::process::Output>,
+        remote: Result<std::process::Output>,
+        diff: &[&str],
+        untracked: &[&str],
+    ) -> MockProcessRunner {
+        let mut queued = vec![local, remote];
+        queued.extend(changes_out(diff, untracked));
+        MockProcessRunner::new(queued)
+    }
+
+    /// Every git command succeeds, with both base refs agreeing on the fork
+    /// point — the ordinary case, where no ancestry probe is needed.
+    fn git_rig(diff: &[&str], untracked: &[&str]) -> MockProcessRunner {
+        probe_rig(sha(LOCAL_FORK), sha(LOCAL_FORK), diff, untracked)
+    }
+
+    /// Neither base ref resolves, so the baseline cannot be found and the query
+    /// fails before the diff. Nothing is queued past the two probes, so a third
+    /// call would panic — which is what
+    /// `a_failed_baseline_resolution_runs_no_further_commands` relies on.
+    fn failing_git_rig(stderr: &str) -> MockProcessRunner {
+        MockProcessRunner::new(vec![
+            MockProcessRunner::fail(stderr),
+            MockProcessRunner::fail(stderr),
         ])
     }
 
-    /// The first git command fails with `stderr`; nothing is queued after it, so
-    /// a second call would panic — which is what
-    /// `a_failing_diff_does_not_run_the_untracked_listing` relies on.
-    fn failing_git_rig(stderr: &str) -> MockProcessRunner {
-        MockProcessRunner::new(vec![MockProcessRunner::fail(stderr)])
+    /// The two probes disagree, and `local_is_ancestor` says which way. Git
+    /// answers `merge-base --is-ancestor` with an exit code, not stdout: 0 for
+    /// yes, 1 for no.
+    fn diverged_rig(local_is_ancestor: bool, diff: &[&str]) -> MockProcessRunner {
+        let verdict = if local_is_ancestor {
+            MockProcessRunner::ok()
+        } else {
+            MockProcessRunner::fail_with_code(1, "")
+        };
+        let mut queued = vec![sha(LOCAL_FORK), sha(REMOTE_FORK), verdict];
+        queued.extend(changes_out(diff, &[]));
+        MockProcessRunner::new(queued)
     }
 
+    /// The spec's AgentTreeGitQuery, in full: probe both refs the base branch
+    /// name can denote, then diff the working tree against the fork point they
+    /// agree on. Agreement is the ordinary case, and it costs no ancestry
+    /// probe — there is nothing to rank.
     #[test]
-    fn git_changes_runs_a_merge_base_diff_and_an_untracked_listing() {
+    fn git_changes_probes_both_base_refs_then_diffs_from_the_fork_point() {
         let runner = git_rig(&["M", "src/a.rs"], &[]);
         let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
 
@@ -1453,21 +1628,162 @@ mod tests {
         assert_eq!(
             runner.flattened_calls(),
             vec![
-                "git -C /wt diff --name-status --no-renames -z --merge-base main".to_string(),
+                "git -C /wt merge-base HEAD main".to_string(),
+                "git -C /wt merge-base HEAD origin/main".to_string(),
+                format!("git -C /wt diff --name-status --no-renames -z {LOCAL_FORK}"),
                 "git -C /wt ls-files --others --exclude-standard -z".to_string(),
             ]
         );
     }
 
+    /// The bug this resolution exists for. A base branch the human has not
+    /// pulled in weeks leaves the LOCAL ref behind its remote, while the
+    /// worktree was branched from the remote one. Measuring from the local
+    /// fork point would badge every upstream commit since as the agent's work.
+    ///
+    /// Local fork point is an ancestor of the remote one, so the remote wins.
+    #[test]
+    fn a_local_base_behind_its_remote_diffs_from_the_remote_fork_point() {
+        let runner = diverged_rig(true, &["M", "src/a.rs"]);
+        git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+
+        let calls = runner.flattened_calls();
+        assert_eq!(
+            calls[2],
+            format!("git -C /wt merge-base --is-ancestor {LOCAL_FORK} {REMOTE_FORK}")
+        );
+        assert_eq!(
+            calls[3],
+            format!("git -C /wt diff --name-status --no-renames -z {REMOTE_FORK}")
+        );
+    }
+
+    /// The mirror image, and dispatch's own default: wrap-up fast-forwards the
+    /// local base branch without pushing, so the local ref is AHEAD and the
+    /// worktree was branched from it. Preferring the remote ref unconditionally
+    /// would mis-attribute in exactly the same way.
+    ///
+    /// The same exit code covers the case where the two refs have truly
+    /// diverged and neither fork point is an ancestor of the other: the spec
+    /// settles that one by fixed rule, and the rule is that the local ref wins.
+    #[test]
+    fn a_local_base_ahead_of_its_remote_diffs_from_the_local_fork_point() {
+        let runner = diverged_rig(false, &["M", "src/a.rs"]);
+        git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+
+        assert_eq!(
+            runner.flattened_calls()[3],
+            format!("git -C /wt diff --name-status --no-renames -z {LOCAL_FORK}")
+        );
+    }
+
+    /// A base branch the human never checked out locally is ordinary — it is
+    /// the case dispatch's own start-point selection calls normal. The pane
+    /// must keep working on the remote ref alone, not fail.
+    #[test]
+    fn a_missing_local_base_branch_still_resolves_from_the_remote_ref() {
+        let runner = probe_rig(
+            MockProcessRunner::fail("fatal: Not a valid object name main\n"),
+            sha(REMOTE_FORK),
+            &["M", "src/a.rs"],
+            &[],
+        );
+
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(changes, vec![modified("src/a.rs")]);
+        assert_eq!(
+            runner.flattened_calls()[2],
+            format!("git -C /wt diff --name-status --no-renames -z {REMOTE_FORK}"),
+            "one candidate needs no ranking, so no ancestry probe runs"
+        );
+    }
+
+    /// The other half: a repo with no remote-tracking ref for the base branch
+    /// — a purely local base, or a remote never fetched — resolves from the
+    /// local branch alone.
+    #[test]
+    fn a_missing_remote_base_ref_still_resolves_from_the_local_branch() {
+        let runner = probe_rig(
+            sha(LOCAL_FORK),
+            MockProcessRunner::fail("fatal: Not a valid object name origin/main\n"),
+            &["M", "src/a.rs"],
+            &[],
+        );
+
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(changes, vec![modified("src/a.rs")]);
+        assert_eq!(
+            runner.flattened_calls()[2],
+            format!("git -C /wt diff --name-status --no-renames -z {LOCAL_FORK}")
+        );
+    }
+
+    /// Git answers `--is-ancestor` with exit 0 or 1 and nothing else. Any
+    /// other exit means it did not answer at all, and a probe that did not
+    /// answer must not be read as "no" — "no" keeps the LOCAL fork point, which
+    /// is exactly the mis-attribution AgentTreeBaselineIsTaskBaseBranch exists
+    /// to forbid, and it would be shown as a correct tree with no red border.
+    /// Fail the query instead, so the failure rule fires.
+    #[test]
+    fn an_ancestry_probe_that_cannot_answer_fails_the_query() {
+        let runner = MockProcessRunner::new(vec![
+            sha(LOCAL_FORK),
+            sha(REMOTE_FORK),
+            MockProcessRunner::fail_with_code(128, "fatal: unable to read index.lock\n"),
+        ]);
+        let err = git_changes(Path::new("/wt"), "main", &runner)
+            .expect_err("must fail")
+            .to_string();
+        assert!(err.contains("index.lock"), "got {err}");
+        assert_eq!(
+            runner.recorded_calls().len(),
+            3,
+            "nothing may run after a baseline we could not rank"
+        );
+    }
+
+    /// A probe that exits zero but says nothing is not a baseline. An empty
+    /// string handed to `git diff` means something else entirely, so the ref is
+    /// soft-failed out of the running instead — here leaving the remote one to
+    /// answer alone.
+    #[test]
+    fn a_probe_that_returns_no_commit_is_not_a_candidate() {
+        let runner = probe_rig(
+            MockProcessRunner::ok_with_stdout(b"\n"),
+            sha(REMOTE_FORK),
+            &["M", "src/a.rs"],
+            &[],
+        );
+
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(changes, vec![modified("src/a.rs")]);
+        assert_eq!(
+            runner.flattened_calls()[2],
+            format!("git -C /wt diff --name-status --no-renames -z {REMOTE_FORK}")
+        );
+    }
+
+    /// Only when NEITHER ref resolves is there no baseline, and only then does
+    /// the query fail.
+    #[test]
+    fn neither_base_ref_resolving_fails_the_query() {
+        let runner = failing_git_rig("fatal: Not a valid object name nosuchbranch\n");
+        let err = git_changes(Path::new("/wt"), "nosuchbranch", &runner)
+            .expect_err("must fail")
+            .to_string();
+        assert!(err.contains("nosuchbranch"), "got {err}");
+    }
+
     /// Git C-quotes any path with a non-ASCII byte, and separates the status
     /// from the path with a tab, unless `-z` is passed — so `src/é.rs` would
     /// arrive as the literal `"src/\303\251.rs"`, a name that renders wrong and
-    /// opens nothing. Both queries must pass it.
+    /// opens nothing. Both path-emitting queries must pass it; the fork-point
+    /// probes emit commit ids, which have no such problem.
     #[test]
-    fn both_git_queries_ask_for_nul_delimited_output() {
+    fn both_path_emitting_queries_ask_for_nul_delimited_output() {
         let runner = git_rig(&[], &[]);
         git_changes(Path::new("/wt"), "main", &runner).expect("ok");
-        for call in runner.flattened_calls() {
+        for call in &runner.flattened_calls()[2..] {
             assert!(
                 call.split(' ').any(|arg| arg == "-z"),
                 "without -z, quoting breaks non-ASCII names; got {call}"
@@ -1494,29 +1810,34 @@ mod tests {
         );
     }
 
-    /// Both queries are bounded, so a git blocked on an index lock the agent
-    /// itself holds cannot wedge the renderer's single-threaded loop.
+    /// Every query is bounded, so a git blocked on an index lock the agent
+    /// itself holds cannot wedge the renderer's single-threaded loop. The
+    /// fork-point probes are queries like any other and are bounded too — the
+    /// baseline resolution must not become an unbounded hole in that promise.
     #[test]
-    fn both_git_queries_are_bounded_by_a_timeout() {
-        let runner = git_rig(&[], &[]);
+    fn every_git_query_is_bounded_by_a_timeout() {
+        let runner = diverged_rig(true, &[]);
         git_changes(Path::new("/wt"), "main", &runner).expect("ok");
-        assert_eq!(
-            runner.recorded_timeouts(),
-            vec![Some(GIT_TIMEOUT), Some(GIT_TIMEOUT)]
-        );
+        assert_eq!(runner.recorded_timeouts(), vec![Some(GIT_TIMEOUT); 5]);
     }
 
     /// The diff is taken against the working tree, so a committed change is
-    /// still reported. That is the whole reason the baseline is the merge-base
+    /// still reported. That is the whole reason the baseline is the fork point
     /// rather than HEAD — see AgentTreeBaselineIsTaskBaseBranch.
+    ///
+    /// Both probes are built from the task's own base branch name, so a task
+    /// based on anything but `main` is measured against what it actually
+    /// branched from.
     #[test]
     fn git_changes_uses_the_tasks_own_base_branch() {
         let runner = git_rig(&[], &[]);
         git_changes(Path::new("/wt"), "develop", &runner).expect("ok");
-        assert!(
-            runner.flattened_calls()[0].ends_with("--merge-base develop"),
-            "got {:?}",
-            runner.flattened_calls()[0]
+        assert_eq!(
+            &runner.flattened_calls()[..2],
+            [
+                "git -C /wt merge-base HEAD develop".to_string(),
+                "git -C /wt merge-base HEAD origin/develop".to_string(),
+            ]
         );
     }
 
@@ -1547,22 +1868,41 @@ mod tests {
 
     /// A failing git surfaces its own first stderr line, because that line is
     /// what reaches the user's border and has to say something actionable.
+    /// With two probes to fail, the line the user sees is the LOCAL branch's —
+    /// that is the name they typed on the task.
     #[test]
     fn git_changes_fails_with_gits_own_message() {
-        let runner = failing_git_rig("fatal: not a valid object name: nosuchbranch\n");
+        let runner = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("fatal: Not a valid object name nosuchbranch\n"),
+            MockProcessRunner::fail("fatal: Not a valid object name origin/nosuchbranch\n"),
+        ]);
         let err = git_changes(Path::new("/wt"), "nosuchbranch", &runner)
             .expect_err("must fail")
             .to_string();
         assert!(err.contains("nosuchbranch"), "got {err}");
+        assert!(!err.contains("origin/"), "got {err}");
     }
 
-    /// A failure in the FIRST command short-circuits — the second must not run
-    /// against a repo we already know we cannot read.
+    /// A baseline we could not resolve short-circuits — neither the diff nor
+    /// the listing may run against a repo we already know we cannot read.
     #[test]
-    fn a_failing_diff_does_not_run_the_untracked_listing() {
+    fn a_failed_baseline_resolution_runs_no_further_commands() {
         let runner = failing_git_rig("fatal: not a git repository\n");
         let _ = git_changes(Path::new("/wt"), "main", &runner);
-        assert_eq!(runner.recorded_calls().len(), 1);
+        assert_eq!(runner.recorded_calls().len(), 2);
+    }
+
+    /// A failing diff short-circuits too: the listing must not run against a
+    /// repo that just refused to diff.
+    #[test]
+    fn a_failing_diff_does_not_run_the_untracked_listing() {
+        let runner = MockProcessRunner::new(vec![
+            sha(LOCAL_FORK),
+            sha(LOCAL_FORK),
+            MockProcessRunner::fail("fatal: unable to read index.lock\n"),
+        ]);
+        let _ = git_changes(Path::new("/wt"), "main", &runner);
+        assert_eq!(runner.recorded_calls().len(), 3);
     }
 
     // ---- refresh: failure keeps the last good tree ------------------------

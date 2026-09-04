@@ -824,10 +824,12 @@ rule HookPeerMessageSent {
     -- trail. See mcp-task-tools.allium's note on why `send_message` (the
     -- former MCP tool) was replaced by this.
     -- SendMessageObserved is PostToolUse already filtered to tool = "SendMessage"
-    -- — mirrors agent-tree.allium's AgentFileToolCompleted, a named,
-    -- pre-filtered trigger rather than a raw PostToolUse annotated with a
-    -- literal tool name (which isn't valid trigger syntax for a listening
-    -- rule; literal annotations are only for trigger *emissions*).
+    -- — a named, pre-filtered trigger rather than a raw PostToolUse annotated
+    -- with a literal tool name (which isn't valid trigger syntax for a
+    -- listening rule; literal annotations are only for trigger *emissions*).
+    -- It is now the only trigger of that shape: agent-tree.allium had one, but
+    -- retired it when its pane stopped reading tool calls and started asking
+    -- git instead.
     when: SendMessageObserved(sender, to, message)
 
     let target = core/Task.find_by_session_name(to)

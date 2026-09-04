@@ -5,8 +5,9 @@
 --        agent's own tmux window that shows which files in that agent's
 --        worktree have changed.
 -- Includes: The git query that answers "what changed" (a diff of the worktree
---           against the merge-base with the task's base branch, plus untracked
---           files); the companion pane's lifecycle (split at agent-window
+--           against this branch's fork point from the task's base branch, plus
+--           untracked files); the companion pane's lifecycle (split at
+--           agent-window
 --           creation, global toggle keybinding bound alongside the board TUI,
 --           kill-pane + re-split); and the tree/badge rendering rules
 --           (worktree-rooted tree, Added/Modified/Deleted badges,
@@ -116,8 +117,9 @@ entity AgentTreePane {
     -- MainSessionPaneScope" note.
     --
     -- The task supplies two things the git query needs and nothing else can:
-    -- its worktree (pane.root) and its base_branch (the diff baseline — see
-    -- AgentTreeBaselineIsTaskBaseBranch).
+    -- its worktree (pane.root) and its base_branch. The latter is the NAME the
+    -- baseline is resolved from, not the baseline itself — see
+    -- AgentTreeBaselineIsTaskBaseBranch.
     task: core/Task
 
     -- Absolute directory the tree is rooted at: always the task's worktree path
@@ -186,22 +188,31 @@ config {
 
     -- Redraw cadence. Each tick runs the git query (see AgentTreeGitQuery) and
     -- rebuilds only if its answer changed, so the visible cost of a one-second
-    -- poll is two short-lived git processes per open pane. That is well below
-    -- the point where a follow-along view feels laggy, and git's own index
-    -- caching makes a repeated no-change query cheap. Not tied to the board
-    -- TUI's tick_interval — the two processes are independent.
+    -- poll is four short-lived git processes per open pane — five when the
+    -- baseline resolution has two candidates to rank. That is well below the
+    -- point where a follow-along view feels laggy: the added processes are
+    -- merge-base probes, which read refs and objects and nothing else, and
+    -- git's own index caching makes a repeated no-change query cheap. Not tied
+    -- to the board TUI's tick_interval — the two processes are independent.
     agent_tree_refresh_interval: Duration = 1.second
 
-    -- How long a single git query may run before it is killed and treated as a
-    -- failure. A pane must never wedge on a git that is blocked on an index
+    -- How long a single git COMMAND may run before it is killed and treated as
+    -- a failure. A pane must never wedge on a git that is blocked on an index
     -- lock the agent itself holds; the refresh timer would then stop ticking
     -- and the pane would freeze rather than merely go stale.
     --
     -- Deliberately far below the 2-minute timeout the board's other git calls
-    -- use. Those run on a worker while a TUI stays live; this one runs inline
-    -- in the renderer's own single-threaded loop, so its timeout is also the
-    -- longest the pane can ignore a keypress. Five seconds is generous for a
-    -- name-only diff and short enough that a wedged git reads as a hiccup.
+    -- use. Those run on a worker while a TUI stays live; these run inline in
+    -- the renderer's own single-threaded loop, so this timeout bounds how long
+    -- the pane can ignore a keypress. Five seconds is generous for a name-only
+    -- diff and short enough that a wedged git reads as a hiccup.
+    --
+    -- The bound is per command and a tick runs up to five of them, so the
+    -- arithmetic worst case is five times this. Only two of the five can
+    -- realistically reach it: an index lock is by far the commonest cause of a
+    -- slow query, and only the diff and the untracked listing touch the index.
+    -- The baseline resolution's merge-base probes take no lock, so they do not
+    -- move the practical ceiling.
     agent_tree_git_timeout: Duration = 5.seconds
 
     -- The tmux key (pressed after the tmux prefix) that toggles the companion
@@ -666,16 +677,21 @@ rule RefreshAgentTree {
 
     @guidance
         -- == AgentTreeGitQuery: what "asking git" means ==
-        -- Two commands, both run against pane.root and both bounded by
+        -- Three steps, all run against pane.root and each bounded by
         -- config.agent_tree_git_timeout:
         --
-        --   1. A name-and-status diff of the WORKING TREE against the
-        --      merge-base of pane.task.base_branch and HEAD, with rename
-        --      detection off.
-        --   2. A listing of untracked files, honouring the repo's ignore
+        --   1. Resolve the baseline: this worktree's fork point from
+        --      pane.task.base_branch, taking BOTH the local branch of that
+        --      name and its remote-tracking counterpart into account. See
+        --      AgentTreeBaselineIsTaskBaseBranch for why one of the two alone
+        --      is not enough.
+        --   2. A name-and-status diff of the WORKING TREE against that
+        --      baseline, with rename detection off.
+        --   3. A listing of untracked files, honouring the repo's ignore
         --      rules.
         --
-        -- Both ask git for NUL-delimited output. Git's default is to C-quote
+        -- Steps 2 and 3 ask git for NUL-delimited output; step 1 emits commit
+        -- ids, which need none. Git's default is to C-quote
         -- any path containing a non-ASCII byte, so a file whose name holds an
         -- accented letter comes back C-quoted, with the letter replaced by its
         -- octal escapes — which would be rendered as that literal string and
@@ -683,11 +699,11 @@ rule RefreshAgentTree {
         -- or a newline unambiguous, and means no field may be trimmed: every
         -- byte between delimiters is part of the filename.
         --
-        -- The first covers every tracked change the agent has made for this
+        -- The second covers every tracked change the agent has made for this
         -- task, committed or not — that is the point of diffing the working
-        -- tree against the merge-base rather than against HEAD. An agent that
+        -- tree against the fork point rather than against HEAD. An agent that
         -- commits mid-session does not watch its work vanish from the pane.
-        -- The second covers files the agent created and has not staged, which
+        -- The third covers files the agent created and has not staged, which
         -- a diff cannot see.
         --
         -- == CollapsedGitStatusLetters ==
@@ -735,7 +751,7 @@ rule RefreshAgentTree {
         --      refresh; only newly-changed paths add new nodes.
         --
         -- == Black boxes ==
-        -- git_changes(root, base) runs the two commands above and returns
+        -- git_changes(root, base) runs the three steps above and returns
         -- either the parsed set of GitFileChanges or a failure.
         -- changed_tree(changes) derives (path, kind) entries for every changed
         -- path and each of its ancestor directories, deduplicated.
@@ -776,9 +792,11 @@ rule RefreshAgentTree {
 }
 
 rule AgentTreeGitFailureKeepsLastGoodTree {
-    -- The same timer tick, when git could not answer: the base branch does not
-    -- exist, the index is locked, the worktree is gone, git is not on PATH, or
-    -- the query overran config.agent_tree_git_timeout.
+    -- The same timer tick, when git could not answer: NEITHER ref of the base
+    -- branch exists (one of the two is enough — see
+    -- AgentTreeBaselineIsTaskBaseBranch), the index is locked, the worktree is
+    -- gone, git is not on PATH, or the query overran
+    -- config.agent_tree_git_timeout.
     when: pane: AgentTreePane.last_rendered_at + config.agent_tree_refresh_interval <= now
 
     requires: pane.status = shown
@@ -1245,18 +1263,96 @@ surface AgentTreeCompanionPane {
         -- forbids.
 
     @guarantee AgentTreeBaselineIsTaskBaseBranch
-        -- "Changed" always means "changed relative to the merge-base of this
-        -- task's base branch and this worktree's HEAD" — never relative to
-        -- HEAD alone, and never relative to the branch tip. Two consequences
-        -- the user depends on:
+        -- "Changed" always means "changed relative to this worktree's fork
+        -- point from the task's base branch" — never relative to HEAD alone,
+        -- and never relative to a base tip. Two consequences the user depends
+        -- on:
         --
         --   * Committing does not empty the pane. An agent that commits
         --     mid-session still sees its own work, because the baseline is
         --     behind the commit.
         --   * Other people's work on the base branch never appears. The
-        --     baseline is the merge-base, not the current base tip, so commits
+        --     baseline is the fork point, not the current base tip, so commits
         --     that landed on the base branch after this task branched are not
         --     the agent's changes and are not shown as such.
+        --
+        -- == Resolving the fork point: a base branch names up to two refs ==
+        -- task.base_branch is a NAME, and a repo can hold two refs under it:
+        -- the local branch, and its remote-tracking counterpart. They drift
+        -- apart in both directions during normal operation, and dispatch
+        -- branches a worktree from whichever of the two was ahead at the
+        -- moment it provisioned (see dispatch.allium's start-point selection).
+        -- So neither ref alone is a safe baseline:
+        --
+        --   * Local behind remote — the human never checked the base branch
+        --     out, or has not pulled it in weeks. The worktree was branched
+        --     from the remote ref. Measuring from the local one puts the
+        --     baseline before work that was already there when the agent
+        --     started, and every upstream commit since is attributed to the
+        --     agent.
+        --   * Local ahead of remote — a task wrapped up by fast-forwarding the
+        --     local base branch without pushing, which is dispatch's own
+        --     default. The worktree was branched from the local ref, and
+        --     measuring from the remote one mis-attributes in exactly the same
+        --     way, only mirrored.
+        --
+        -- Both errors are the same error and it is the one this guarantee
+        -- exists to forbid, so the baseline is resolved against BOTH refs: the
+        -- fork point is taken against each ref that resolves, and the one
+        -- nearer HEAD wins. A ref that does not resolve is simply not a
+        -- candidate — a base branch the human never checked out locally is
+        -- ordinary, and must leave the pane working, not failing.
+        --
+        -- "Fork point" here means the latest common ancestor of HEAD and the
+        -- ref — git's merge-base. It does NOT mean git's own `--fork-point`
+        -- mode, which consults the reflog and reports nothing at all in a
+        -- freshly provisioned worktree that has no reflog to consult.
+        --
+        -- Nearness is ancestry, not commit count: of two candidates, the one
+        -- that has the other as an ancestor is nearer. Two candidates that are
+        -- already equal need no ranking and are not compared, which is the
+        -- ordinary case. Should neither be an ancestor of the other — possible
+        -- only where the two refs have truly diverged — the local ref's fork
+        -- point wins. That case has no right answer, since either choice shows
+        -- some commits the agent did not write, so it is settled by a fixed
+        -- rule rather than a heuristic.
+        --
+        -- A comparison that cannot be MADE is not the same as one that comes
+        -- back "no", and the two must not be conflated. "No" keeps the local
+        -- candidate; a comparison git failed to answer — because it could not
+        -- run, or overran config.agent_tree_git_timeout — would then keep the
+        -- local candidate too, silently reinstating the very mis-attribution
+        -- this guarantee forbids and presenting it as a correct tree. So an
+        -- unanswerable comparison fails the whole query instead, and the tick
+        -- takes AgentTreeGitFailureKeepsLastGoodTree: last good tree, notice,
+        -- red border.
+        --
+        -- When neither ref resolves and the query fails, the message the user
+        -- sees is the LOCAL branch's. That is the name they put on the task, so
+        -- it is the one they can act on; the remote ref's complaint would name
+        -- a ref they never typed.
+        --
+        -- == The remote is `origin` ==
+        -- The remote-tracking counterpart is looked for under `origin`, as it
+        -- is everywhere else in dispatch's git handling. A repo whose remote is
+        -- named anything else therefore has only one candidate, always, and is
+        -- measured from its local base branch exactly as before this resolution
+        -- existed — including the mis-attribution when that branch is stale.
+        -- The cost is accepted rather than hidden: making the remote name
+        -- configurable here alone would leave dispatch's own provisioning,
+        -- which picks the start point, still assuming `origin`, so the two
+        -- would disagree about what the worktree was branched from — which is
+        -- the whole bug. The remote name is one decision for the whole system
+        -- or none.
+        --
+        -- The whole resolution is re-derived from git on every tick and
+        -- nothing about it is remembered between refreshes, which is what
+        -- keeps AgentTreeIsGitDerived true of the baseline as well as of the
+        -- changes. The alternative — recording at provision time which ref the
+        -- worktree was branched from — was rejected for that reason: it makes
+        -- the pane depend on dispatch-time bookkeeping that no later git
+        -- command can confirm or repair, and it says nothing at all about a
+        -- worktree that was reused rather than freshly branched.
 
     @guarantee AgentTreeNoticeRedensBorder
         -- Whenever pane.error_notice is set, the pane's border is drawn in the
@@ -1281,10 +1377,11 @@ surface AgentTreeCompanionPane {
         -- opening it, cannot change what the agent does or what the board
         -- shows.
         --
-        -- The git commands this pane runs are read-only by construction — a
-        -- diff and a file listing. Nothing here fetches, commits, stages,
-        -- checks out or writes to the index, and an agent's own git operations
-        -- must never be disturbed by the pane observing them.
+        -- The git commands this pane runs are read-only by construction — the
+        -- baseline resolution's merge-base probes, a diff and a file listing.
+        -- Nothing here fetches, commits, stages, checks out or writes to the
+        -- index, and an agent's own git operations must never be disturbed by
+        -- the pane observing them.
         --
         -- OpenSelectedAgentTreeFile does not breach this, and the distinction is
         -- worth stating precisely: the renderer launches an editor process in a

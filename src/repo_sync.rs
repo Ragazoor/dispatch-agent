@@ -119,7 +119,7 @@ impl std::fmt::Display for SyncError {
 
 /// The `<base>...origin/<base>` range whose two-sided count is the drift.
 fn count_range(base_branch: &str) -> String {
-    format!("{base_branch}...origin/{base_branch}")
+    format!("{base_branch}...{}", crate::git::origin_ref(base_branch))
 }
 
 /// Count commits on each side of `<base>...origin/<base>`.
@@ -263,7 +263,7 @@ pub fn sync_repo(
                     &repo,
                     "merge",
                     "--no-edit",
-                    &format!("origin/{base_branch}"),
+                    &crate::git::origin_ref(base_branch),
                 ],
                 SUBPROCESS_TIMEOUT,
             )

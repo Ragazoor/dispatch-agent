@@ -7,7 +7,7 @@ use crate::process::ProcessRunner;
 use crate::tmux;
 
 use super::git_output::WORKTREE_ALREADY_REMOVED;
-use super::stderr_str;
+use crate::process::stderr_str;
 
 /// Bounded retry budget for `git fetch origin <base>` during worktree
 /// provisioning. Smooths over transient failures (e.g. ref-lock contention
@@ -70,7 +70,7 @@ impl StartPoint {
     /// The ref to hand `git worktree add`, and to rebase onto.
     pub(super) fn git_ref(&self) -> String {
         match self {
-            StartPoint::Remote { base } => format!("origin/{base}"),
+            StartPoint::Remote { base } => crate::git::origin_ref(base),
             StartPoint::Local { base } => base.clone(),
         }
     }

@@ -14,10 +14,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// What git says happened to a file, relative to the merge-base with the task's
-/// base branch. Doubles as the badge vocabulary — see the spec's `FileChange`
-/// enum, which is deliberately one enum for both so a badge cannot claim
-/// something git did not say.
+/// What git says happened to a file, relative to this worktree's fork point
+/// from the task's base branch. Doubles as the badge vocabulary — see the
+/// spec's `FileChange` enum, which is deliberately one enum for both so a
+/// badge cannot claim something git did not say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileChange {
     Added,

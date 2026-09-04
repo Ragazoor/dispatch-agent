@@ -72,6 +72,17 @@ rule DoThing {
 }
 ALLIUM
 
+# A second spec, so a cross-spec citation can name a block that is real but
+# lives in the WRONG file. `SidecarStarts` exists only here.
+cat >"$WORKDIR/docs/specs/other.allium" <<'ALLIUM'
+rule SidecarStarts {
+    -- == ConceptualOnlyName ==
+    -- Named in prose rather than declared, exactly as tasks.allium's
+    -- TaskTeardown is. A citation of it must still resolve.
+    when: Whatever
+}
+ALLIUM
+
 failures=0
 
 # Run the checker over fixture file $2 (contents $3), asserting exit status $1.
@@ -271,6 +282,46 @@ out="$(cd "$WORKDIR" && bash "$CHECKER" 2>&1)" || true
 rm -rf "$WORKDIR/plugin/skills/some-skill"
 if ! grep -q 'ghost_kb_function' <<<"$out"; then
     echo "FAIL: default scan does not catch a phantom in an arbitrary plugin/skills/*/SKILL.md" >&2
+    echo "  output: $out" >&2
+    failures=$((failures + 1))
+fi
+
+# --- `<spec>.allium's Block` cross-spec citations. -------------------------
+# The shape that let agent-health.allium cite agent-tree.allium's
+# AgentFileToolCompleted for three months after the trigger was deleted. Bare
+# PascalCase is deliberately NOT scanned (see the checker's header), but a name
+# qualified by the file that is supposed to declare it can be checked against
+# THAT file — the same reasoning as the `path.rs::symbol` shape above.
+expect 0 docs/specs/scratch.allium "-- Mirrors other.allium's SidecarStarts, a named trigger." \
+    "cross-spec citation of a block the cited spec declares passes"
+expect 0 docs/scratch.md "See other.allium's SidecarStarts for the shape." \
+    "cross-spec citation passes in a markdown doc"
+expect 0 src/scratch.rs "/// See the spec's other.allium's SidecarStarts." \
+    "cross-spec citation passes in a Rust doc comment"
+expect 1 docs/specs/scratch.allium "-- Mirrors other.allium's GhostTrigger, a named trigger." \
+    "cross-spec citation of a block no spec declares fails"
+expect 1 docs/specs/scratch.allium "-- Mirrors real.allium's SidecarStarts, a named trigger." \
+    "cross-spec citation naming the WRONG spec fails"
+expect 1 docs/specs/scratch.allium "-- Mirrors nowhere.allium's SidecarStarts." \
+    "cross-spec citation of a spec file that does not exist fails"
+# Prose-defined names are the common case in this corpus: TaskTeardown and
+# ToggleVsSplitPaneInteraction are both introduced in `--` comments, never
+# declared. Comments are therefore NOT stripped from the cited spec — unlike
+# the code index, where stripping is what stops a phantom self-validating.
+expect 0 docs/specs/scratch.allium "-- As other.allium's ConceptualOnlyName describes." \
+    "cross-spec citation of a name defined only in the cited spec's prose passes"
+expect 0 docs/specs/scratch.allium "-- Was other.allium's GhostTrigger. allow-phantom-symbol: retired" \
+    "marker suppresses a stale cross-spec citation"
+# A path-qualified citation names the same file as a bare one.
+expect 0 docs/scratch.md "See docs/specs/other.allium's SidecarStarts." \
+    "a path-qualified cross-spec citation resolves to the same file"
+# The citation must be reported once, by the cross-spec kind, not a second
+# time by any other shape.
+printf "%s\n" "-- Mirrors other.allium's GhostTrigger here." >"$WORKDIR/docs/specs/scratch.allium"
+out="$(cd "$WORKDIR" && bash "$CHECKER" docs/specs/scratch.allium 2>&1)" || true
+rm -f "$WORKDIR/docs/specs/scratch.allium"
+if [[ "$(grep -c 'GhostTrigger' <<<"$out")" != 1 ]]; then
+    echo "FAIL: a cross-spec citation must be reported exactly once" >&2
     echo "  output: $out" >&2
     failures=$((failures + 1))
 fi

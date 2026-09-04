@@ -25,6 +25,25 @@ pub fn detect_default_branch(repo_path: &str, runner: &dyn ProcessRunner) -> Str
     "main".to_string()
 }
 
+/// The remote-tracking ref for a branch name: `origin/<base_branch>`.
+///
+/// The single place the crate decides that the remote is called `origin`.
+/// Everything that reaches for a base branch's remote counterpart goes through
+/// here — provisioning a worktree's start point
+/// ([`crate::dispatch::worktree`]), measuring drift and merging
+/// ([`crate::repo_sync`]), and resolving the agent tree's diff baseline
+/// (`crate::cli::agent_tree`).
+///
+/// Being one definition is load-bearing, not tidiness. Two of those callers
+/// must agree on which ref a worktree was branched from: dispatch picks the
+/// start point, and the agent tree measures against it. Task #4539 was the bug
+/// where they disagreed, and a second hardcoded `origin/` is how that
+/// disagreement comes back. Making the remote name configurable is a separate,
+/// whole-system decision — this helper is what would make it a one-line one.
+pub fn origin_ref(base_branch: &str) -> String {
+    format!("origin/{base_branch}")
+}
+
 /// Whether the repo has an `origin` remote configured.
 ///
 /// Three outcomes, not two: `Ok(true)` and `Ok(false)` are the probe's own
