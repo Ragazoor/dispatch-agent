@@ -56,8 +56,8 @@ pub(crate) const fn is_pane_id(s: &str) -> bool {
 /// which every name-taking helper calls to resolve it to a pane ID before use.
 ///
 /// It is deliberately *not* limited to `task-<id>`: the TUI's own window and
-/// the editor windows are window names too, and the prefix
-/// hazard applies to them identically. What it does exclude is the two things
+/// the editor windows are window names too, and the prefix hazard applies to
+/// them identically. What it does exclude is the two things
 /// that are not window names — the empty string (tmux's "current window") and a
 /// pane ID (`%3`) — both of which bypass name resolution and so must never be
 /// mistaken for one. [`crate::tmux::window_target`] keeps taking `&str`
@@ -72,13 +72,13 @@ impl TmuxWindow {
     }
 
     /// Wrap a window name that is a literal in this crate's own source — the
-    /// board's `TUI` window. `'static` proves the argument
-    /// cannot come from the database, from tmux, or from an MCP request;
-    /// anything derived from data goes through [`parse`] instead.
+    /// board's `TUI` window. `'static` proves the argument cannot come from
+    /// the database, from tmux, or from an MCP request; anything derived from
+    /// data goes through [`parse`] instead.
     ///
     /// `'static` proves provenance, not validity, so this still checks the two
-    /// exclusions — as a `const fn`, which is the point: the call site is
-    /// a `const` item, so an empty or pane-ID literal is a compile error rather
+    /// exclusions — as a `const fn`, which is the point: both call sites are
+    /// `const` items, so an empty or pane-ID literal is a compile error rather
     /// than a panic. Nothing calls this outside a `const` context, so the
     /// `assert!`s have no runtime path to reach.
     ///
@@ -139,7 +139,7 @@ impl TmuxWindow {
     }
 
     /// The task this window belongs to, or `None` for any window that isn't a
-    /// task-agent window (the board's own TUI window, an editor window,
+    /// task-agent window (the board's own TUI window, an editor window, or
     /// anything else).
     pub fn task_id(&self) -> Option<TaskId> {
         self.0.strip_prefix(TASK_WINDOW_PREFIX)?.parse().ok()

@@ -101,7 +101,7 @@ pub(in crate::tui::ui) struct FormStyles {
 /// Shows existing paths that fuzzy-match `buffer`, then appends a selectable
 /// new-path entry when `buffer` is non-empty and not an exact match for any
 /// filtered item. This is the shared rendering contract for all
-/// `RepoPathPicker` surfaces (InputRepoPath, QuickDispatch).
+/// `RepoPathPicker` surfaces (InputRepoPath, QuickDispatch, InputBaseBranch).
 fn append_filtered_repos_with_new_entry<'a>(
     lines: &mut Vec<Line<'a>>,
     filtered: &[String],
@@ -285,6 +285,41 @@ pub(in crate::tui) fn input_description_lines(
     ]
 }
 
+/// The hint every `RepoPathPicker` surface closes with. One literal rather than
+/// three, so the pickers cannot drift apart on a 65-character string of glyphs.
+const REPO_PICKER_HINT: &str = "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel";
+
+/// Append a picker's candidate list and its closing hint — the tail shared by
+/// every `RepoPathPicker` surface (docs/specs/dispatch.allium: RepoPathPicker).
+///
+/// `height_offset` is the count of non-candidate rows the mode's own form
+/// already occupies, and is the only thing that differs between the three
+/// callers. `filtered` is passed in rather than derived here because the
+/// candidate source differs too: the global repo-path set for two of them, a
+/// per-repo branch history for `input_base_branch_lines`.
+fn append_picker_candidates<'a>(
+    lines: &mut Vec<Line<'a>>,
+    filtered: &[String],
+    app: &'a App,
+    area: Rect,
+    styles: &FormStyles,
+    height_offset: u16,
+) {
+    append_filtered_repos_with_new_entry(
+        lines,
+        filtered,
+        &app.input.buffer,
+        app.input.repo_cursor,
+        &RepoListCtx {
+            height_offset,
+            area_height: area.height,
+            hint: styles.hint,
+        },
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(REPO_PICKER_HINT, styles.hint)));
+}
+
 pub(in crate::tui) fn input_repo_path_lines<'a>(
     app: &'a App,
     area: Rect,
@@ -307,22 +342,7 @@ pub(in crate::tui) fn input_repo_path_lines<'a>(
         caret_field("  Repo path: ", app, area, styles.active),
     ];
     let filtered = crate::tui::filtered_repos(&app.board.repo_paths, &app.input.buffer);
-    append_filtered_repos_with_new_entry(
-        &mut lines,
-        &filtered,
-        &app.input.buffer,
-        app.input.repo_cursor,
-        &RepoListCtx {
-            height_offset: 7,
-            area_height: area.height,
-            hint: styles.hint,
-        },
-    );
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        styles.hint,
-    )));
+    append_picker_candidates(&mut lines, &filtered, app, area, styles, 7);
     lines
 }
 
@@ -359,22 +379,7 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
     ];
     let history = app.base_branches_for(&repo_path);
     let filtered = crate::tui::filtered_repos(history, &app.input.buffer);
-    append_filtered_repos_with_new_entry(
-        &mut lines,
-        &filtered,
-        &app.input.buffer,
-        app.input.repo_cursor,
-        &RepoListCtx {
-            height_offset: 6,
-            area_height: area.height,
-            hint: styles.hint,
-        },
-    );
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        styles.hint,
-    )));
+    append_picker_candidates(&mut lines, &filtered, app, area, styles, 6);
     lines
 }
 
@@ -452,22 +457,7 @@ pub(in crate::tui) fn quick_dispatch_lines<'a>(
         Line::from(""),
         caret_field("  Filter: ", app, area, styles.active),
     ];
-    append_filtered_repos_with_new_entry(
-        &mut lines,
-        &filtered,
-        &app.input.buffer,
-        app.input.repo_cursor,
-        &RepoListCtx {
-            height_offset: 7,
-            area_height: area.height,
-            hint: styles.hint,
-        },
-    );
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        styles.hint,
-    )));
+    append_picker_candidates(&mut lines, &filtered, app, area, styles, 7);
     lines
 }
 

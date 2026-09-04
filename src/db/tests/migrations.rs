@@ -4503,9 +4503,19 @@ fn migration_v95_is_idempotent_and_survives_a_missing_settings_table() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
 
-    conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-        .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO settings (key, value) VALUES ('main_session.dir', '/home/user');",
+    )
+    .unwrap();
 
+    // Twice, so the second run exercises the already-deleted path rather than
+    // the empty-table one the call above already covered.
     crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
     crate::db::migrations::migrate_v95_drop_main_session_dir(&conn).unwrap();
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
 }

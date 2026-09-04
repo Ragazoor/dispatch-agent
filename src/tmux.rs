@@ -52,10 +52,10 @@ fn run_checked_stdout(runner: &dyn ProcessRunner, args: &[&str], context: &str) 
 /// Used by [`new_window`], [`set_window_dispatch_dir`] and
 /// [`ensure_split_hook`] — and so by every one of their callers, including
 /// `provision_worktree`'s `post_add` step and `resume_agent`
-/// (`src/dispatch/agents.rs`) — which is what closes
-/// #4202. Every other tmux call in this module still goes through the
-/// unbounded [`run_checked`]; if one of those turns out to need the same
-/// treatment it should get its own pass rather than folding in here.
+/// (`src/dispatch/agents.rs`) — which is what closes #4202. Every other tmux
+/// call in this module still goes through the unbounded [`run_checked`]; if
+/// one of those turns out to need the same treatment it should get its own
+/// pass rather than folding in here.
 fn run_checked_timeout(runner: &dyn ProcessRunner, args: &[&str], context: &str) -> Result<Output> {
     check_output(
         runner.run_with_timeout("tmux", args, SUBPROCESS_TIMEOUT)?,
@@ -299,11 +299,10 @@ pub fn has_window(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Result<boo
 /// A query failure (tmux not reachable, transient error) is deliberately
 /// mapped to "present" rather than "absent" — the caller of this helper uses
 /// the result to decide whether to treat a task's agent as crashed, and a
-/// false "absent" would trigger a spurious
-/// re-dispatch or crash notification from a hiccup that has nothing to do
-/// with the window's actual state. See `has_window`'s other callers
-/// (`kill_window_if_present`) for the opposite default, which applies where
-/// the gated action is itself destructive.
+/// false "absent" would trigger a spurious re-dispatch or crash notification
+/// from a hiccup that has nothing to do with the window's actual state. See
+/// `has_window`'s other callers (`kill_window_if_present`) for the opposite
+/// default, which applies where the gated action is itself destructive.
 pub fn has_window_or_assume_present(window: &TmuxWindow, runner: &dyn ProcessRunner) -> bool {
     has_window(window, runner).unwrap_or(true)
 }
@@ -1308,9 +1307,9 @@ mod tests {
     #[test]
     fn has_window_queries_across_all_sessions() {
         // has_window is used for cross-session liveness checks (cleanup,
-        // finish, editor, staleness) — without -a, list-windows scopes
-        // to the current/attached session only and misses windows living in
-        // another session, producing a false "not found".
+        // finish, editor, staleness) — without -a, list-windows scopes to the
+        // current/attached session only and misses windows living in another
+        // session, producing a false "not found".
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"task-42\n")]);
         let _ = has_window(&test_tmux_window("task-42"), &mock).unwrap();
         let calls = mock.recorded_calls();

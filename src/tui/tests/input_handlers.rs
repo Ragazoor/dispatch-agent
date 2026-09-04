@@ -2325,6 +2325,19 @@ fn handle_key_normal_board_feed_config_key_is_unbound() {
     assert!(matches!(app.board.view_mode, ViewMode::Board(_)));
 }
 
+/// `:` used to open the main session — a task-independent "dispatch-main" tmux
+/// window running an interactive Claude Code session in a directory the user
+/// picked. The feature was removed; `:` is now unbound, so it must fall through
+/// exactly like any unknown key, producing not even a usage event.
+#[test]
+fn handle_key_normal_board_main_session_key_is_unbound() {
+    let mut app = make_app();
+    let cmds = app.handle_key(make_key(KeyCode::Char(':')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(matches!(app.board.view_mode, ViewMode::Board(_)));
+}
+
 /// InputTitle mode routes to the text input handler.
 #[test]
 fn handle_key_input_title_routes_to_text_input() {
@@ -3269,23 +3282,4 @@ fn a_draft_armed_at_the_tag_step_is_created_as_a_phoenix() {
     let draft = inserted_draft(&cmds).expect("the form creates the task");
     assert!(draft.phoenix, "the armed flag must survive to creation");
     assert_eq!(draft.tag, Some(TaskTag::Chore));
-}
-
-// ── Main session removal ──
-//
-// The main session (a task-independent "dispatch-main" tmux window opened with
-// `:`) was removed. `:` is now an unbound key in Normal mode: it must produce
-// no command at all, not even a usage event, and must not change the mode.
-#[test]
-fn colon_is_unbound_in_normal_mode() {
-    let mut app = App::new(vec![]);
-    app.input.mode = InputMode::Normal;
-
-    let cmds = app.handle_key(make_key(KeyCode::Char(':')));
-
-    assert!(
-        cmds.is_empty(),
-        "`:` should be inert in Normal mode, got {cmds:?}"
-    );
-    assert_eq!(app.input.mode, InputMode::Normal);
 }
