@@ -74,7 +74,7 @@ Typing inserts at the caret. In repo-picker fields (`←`/`→` move the text ca
 
 Pressed inside the pane itself (no tmux prefix) while it has tmux focus. The pane is
 its own process — these keys never reach the board TUI, and all of them act on the
-pane's own view only, except `Space`/`Enter` on a file, which opens an editor.
+pane's own view only.
 
 | Key | Action |
 |-----|--------|
@@ -85,22 +85,47 @@ pane's own view only, except `Space`/`Enter` on a file, which opens an editor.
 | `gg` | Jump to the first visible row. A two-key chord with **no** timeout, unlike the board's `gg` — a lone `g` waits as long as you like for the second one, and any other key cancels it and then does its own job |
 | `G` | Jump to the last visible row |
 | `Ctrl+D` / `Ctrl+U` | Move the cursor half a pane-height down / up |
-| `Space` / `Enter` | On a directory: toggle it open/closed. On a file: open it in `$VISUAL`, else `$EDITOR`, else `vi`, in a full-width pane below taking 60% of the window height. Focus stays in the tree, so you can keep browsing; the next file you open **replaces** that pane, killing whatever was running in it |
+| `Space` / `Enter` | On a directory: toggle it open/closed. On a file: show or hide that file's diff in the pane below. Every badge opens, deleted included — a deleted file's diff is exactly its former contents |
+| `a` | Open every changed file's diff at once, or close them all if any are open |
 | `q` / `Ctrl+C` | Close the pane |
 
-The cursor position and manual expansions live in that process, so they do not survive
-closing and reopening the pane. Use `Prefix+e` to toggle it (see above).
+Each row also carries `+N -M` line counts. A directory shows the sum over the changed
+files beneath it, so a collapsed directory says how much is inside. A file git could
+not count — one that is untracked, or binary — shows no counts rather than `+0 -0`,
+which would read as "nothing changed in there".
 
-The editor pane starts in the task's worktree and is handed the file's absolute path.
-`$VISUAL`/`$EDITOR` are split on whitespace and run directly, with no shell — so
-`EDITOR="vim -p"` works, and nothing in the value is shell-expanded. A value that is
-empty or all whitespace counts as unset. The **same** resolution applies to the board's
-pop-out task/epic editor (`e` on a card), so one `$EDITOR` means one thing everywhere.
-A GUI editor that
-forks (`gvim`) returns immediately, so its pane closes while its own window stays open.
-When opening fails — the agent deleted the file after touching it, or tmux refused the
-split — the reason appears in the pane's bottom border until the next keypress, and is
-logged to `app.log`.
+### Agent-tree diff pane
+
+Splits the companion pane's column when you open your first diff: the tree keeps the
+top third, the diff takes the rest. Your agent's own pane is untouched. It closes when
+you close the last diff, and the tree's global toggle takes it away too. Move between
+the two panes with tmux's own pane navigation (`Prefix+↑`/`Prefix+↓`).
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓`, `k` / `↑` | Scroll one line |
+| `Ctrl+D` / `Ctrl+U` | Scroll half a pane-height |
+| `gg` / `G` | Jump to the top / bottom |
+| `q` / `Ctrl+C` | Close the pane — your open files stay open, and the next toggle in the tree brings it back |
+
+It shows every open file's diff as one document in tree order, so scrolling past the
+end of one file reaches the top of the next. Lines wider than the pane are cut at its
+edge rather than wrapped — the pane is narrow, and one long line would otherwise push
+several files off screen. Nothing here can open or close a file: the open set is
+decided in the tree and only in the tree.
+
+Three things show a one-line stand-in instead of contents, and each is a fact about the
+file: it is untracked, so a diff against the index cannot see it (stage it with `git
+add`); git reports it binary; or its diff is over 1 MB.
+
+The cursor position, the manual expansions and the set of open diffs all live in that
+process, so none of them survives closing and reopening the pane. Use `Prefix+e` to
+toggle it (see above).
+
+When something fails — tmux refuses the split, or git cannot answer — the reason
+appears in the pane's bottom border until the next keypress, the whole border turns
+red, and it is logged to `app.log`. Your open files are left alone by a failure: what
+failed is showing them, and the next toggle retries.
 
 ## How Dispatch Works
 
@@ -154,6 +179,7 @@ dispatch caller-headers                          # headersHelper: always emits X
 
 # Agent-tree companion pane
 dispatch agent-tree <task-id>                    # standalone file-tree renderer for one agent
+dispatch agent-diff <task-id>                    # the diff pane below it; split by the tree, not by hand
 dispatch toggle-agent-tree-pane <window>         # bound to a tmux key; not for manual use
 
 # statusLine decorator (wired into ~/.claude/dispatch-statusline.json by
@@ -469,7 +495,7 @@ in your own `~/.claude/settings.json`), or if you're running against a stale
 on `PATH`, so the "tmux not available" skip never fires; the harness starts a
 server, the sandbox blocks the unix socket, and every test in the target dies
 with `error connecting to /tmp/tmux-<uid>/… (Operation not permitted)`. `cargo
-test` then stops at that target — `tests/tmux_editor_pane.rs` is an early one —
+test` then stops at that target — `tests/tmux_diff_pane.rs` is an early one —
 leaving the six later targets unrun. That is the sandbox, not your change:
 re-run with the sandbox disabled, and add `--no-fail-fast` so one blocked
 target can't hide the rest.
