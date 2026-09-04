@@ -126,28 +126,13 @@ pub(crate) fn make_test_repo_with_worktree(
     (dir, repo_path, worktree_dir)
 }
 
-/// Turn `<base>/.worktrees/<slug>` into a real LINKED worktree: the directory,
-/// its git admin directory, and the `gitdir:` pointer git writes between them.
-/// Returns the worktree path and its admin directory.
+/// Turn `<base>/.worktrees/<slug>` into a real LINKED worktree.
 ///
-/// `pub(crate)` for the same reason as [`make_test_repo_with_worktree`] above —
-/// `dispatch::caller_identity`'s own tests need this precondition, and a second
-/// copy is how the two would drift the day the pointer's shape changes.
-pub(crate) fn make_linked_worktree(
-    base: &std::path::Path,
-    slug: &str,
-) -> (String, std::path::PathBuf) {
-    let worktree = base.join(".worktrees").join(slug);
-    std::fs::create_dir_all(&worktree).unwrap();
-    let admin = base.join(".git").join("worktrees").join(slug);
-    std::fs::create_dir_all(&admin).unwrap();
-    std::fs::write(
-        worktree.join(".git"),
-        format!("gitdir: {}\n", admin.display()),
-    )
-    .unwrap();
-    (worktree.to_string_lossy().into_owned(), admin)
-}
+/// Re-exported from [`crate::worktree_admin::tests`], which is where the
+/// function that READS this shape lives. One encoding of what git writes, in
+/// the same module as the code that parses it, so the two cannot drift the day
+/// the pointer's shape changes.
+pub(crate) use crate::worktree_admin::tests::make_linked_worktree;
 
 /// A `~/.claude.json` holding exactly the entry `dispatch setup` writes.
 pub(crate) fn claude_json_with_dispatch_entry(dir: &std::path::Path) -> std::path::PathBuf {
@@ -3516,6 +3501,82 @@ fn toggle_agent_tree_pane_shows_when_no_companion_pane() {
         "expected -c /wt in: {:?}",
         calls[2].1
     );
+}
+
+/// A failed kill of the TREE is what the toggle's caller can see — the pane
+/// stayed and the key looked like it did nothing — so it must reach them rather
+/// than being logged away.
+#[test]
+fn toggle_propagates_a_failed_kill_of_the_tree_pane() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
+        MockProcessRunner::fail("no such pane"),
+    ])
+    .with_windows(&["task-42"]);
+
+    let err = toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap_err();
+
+    assert!(format!("{err:#}").contains("no such pane"), "got {err:#}");
+}
+
+/// ...but a stray diff pane is not worth failing a toggle over. The tree is
+/// going either way.
+#[test]
+fn toggle_survives_a_failed_kill_of_the_diff_pane() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%3 diff\n"),
+        MockProcessRunner::fail("no such pane"), // the diff pane
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options
+        MockProcessRunner::ok(),                 // the tree
+    ])
+    .with_windows(&["task-42"]);
+
+    assert!(toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).is_ok());
+}
+
+/// The orphan resync used to leave behind. After `swap-pane` rewrites a
+/// window's task identity, the diff pane is still rendering the PREVIOUS
+/// occupant's files against the previous worktree's open set — and nothing else
+/// would ever retire it, because both lifecycle paths look the window up by the
+/// TREE's role and would find the fresh one this call spawns.
+#[test]
+fn resync_retires_the_diff_pane_along_with_the_stale_tree() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%3 diff\n"),
+        MockProcessRunner::ok(), // kill-pane: the diff pane
+        MockProcessRunner::ok(), // kill-pane: the stale tree
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options: clear the open set
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options: the respawn's cwd
+        MockProcessRunner::ok_with_stdout(b"%9\n"), // split-window
+        MockProcessRunner::ok(), // set-option
+    ])
+    .with_windows(&["task-42"]);
+
+    resync_agent_tree_pane(&test_tmux_window("task-42"), &mock);
+
+    let calls = mock.recorded_calls();
+    let killed: Vec<&str> = calls
+        .iter()
+        .filter(|(_, args)| args[0] == "kill-pane")
+        .map(|(_, args)| args[2].as_str())
+        .collect();
+    assert_eq!(killed, vec!["%3", "%2"], "calls: {calls:?}");
+    assert!(
+        calls.iter().any(|(_, args)| args[0] == "split-window"),
+        "a fresh tree must still be spawned; calls: {calls:?}"
+    );
+}
+
+/// With no tree pane there is nothing to resync — the window never had one, or
+/// the user hid it — so nothing is killed and nothing is spawned.
+#[test]
+fn resync_is_a_noop_for_a_window_with_no_tree_pane() {
+    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n")])
+        .with_windows(&["task-42"]);
+
+    resync_agent_tree_pane(&test_tmux_window("task-42"), &mock);
+
+    assert_eq!(mock.recorded_calls().len(), 1, "lookup only");
 }
 
 #[test]

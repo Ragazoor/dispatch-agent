@@ -139,6 +139,13 @@ value FileDiff {
     path: String            -- relative to the pane root; matches a GitFileChange.path
     body: String?           -- null exactly when refusal != null
     refusal: DiffRefusal?   -- why there is no body, when there is none
+
+    -- Two nullable fields with a rule joining them (DiffBodyExcludesRefusal),
+    -- which is weaker than this spec would like: "neither" is expressible here
+    -- and is not a state the pane can draw. An implementation is expected to
+    -- collapse the pair into ONE value with two shapes, so the rule holds by
+    -- construction rather than by checking — the same reasoning LineCounts
+    -- applies to its own pair, and dispatch's does exactly that.
 }
 
 -- One row of the rendered tree. Nodes are derived, not stored: they are

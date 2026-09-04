@@ -48,10 +48,14 @@ pub struct LineCounts {
     pub removed: u32,
 }
 
-impl LineCounts {
-    /// Fold another path's counts into these. Used to sum a directory over its
-    /// descendants — see [`build_tree`].
-    fn merge(self, other: LineCounts) -> LineCounts {
+impl std::ops::Add for LineCounts {
+    type Output = LineCounts;
+
+    /// Fold two paths' counts together. Used to sum a directory over its
+    /// descendants — see [`compute_counts`]. Saturating rather than wrapping:
+    /// a repo big enough to overflow this has bigger problems than an
+    /// off-by-2^32 row, and a wrapped total would read as a small one.
+    fn add(self, other: LineCounts) -> LineCounts {
         LineCounts {
             added: self.added.saturating_add(other.added),
             removed: self.removed.saturating_add(other.removed),
@@ -279,23 +283,19 @@ pub fn build_tree(root: &Path, changes: &[GitFileChange]) -> TreeNode {
         let Some(components) = relative_components(&change.path) else {
             continue;
         };
-        badges
+        let (badge, counts) = badges
             .entry(components)
-            .and_modify(|(existing, existing_counts)| {
-                if change_precedence(change.change) > change_precedence(*existing) {
-                    *existing = change.change;
-                }
-                // Counts are merged independently of the badge, because the two
-                // queries that collide on a path do not both supply them: only
-                // the diff counts, and the untracked listing never does. Taking
-                // the counted answer whichever query produced it is what keeps
-                // the result independent of which ran first — the same property
-                // `change_precedence` gives the badge.
-                if existing_counts.is_none() {
-                    *existing_counts = change.counts;
-                }
-            })
             .or_insert((change.change, change.counts));
+        if change_precedence(change.change) > change_precedence(*badge) {
+            *badge = change.change;
+        }
+        // Counts are merged independently of the badge, because the two queries
+        // that collide on a path do not both supply them: only the diff counts,
+        // and the untracked listing never does. Taking the counted answer
+        // whichever query produced it is what keeps the result independent of
+        // which ran first — the same property `change_precedence` gives the
+        // badge.
+        *counts = counts.or(change.counts);
     }
 
     let root_name = root
@@ -348,9 +348,9 @@ fn change_precedence(change: FileChange) -> u8 {
 /// we cannot vouch for, and the pane's rooting at the worktree
 /// (`TaskPaneRootIsTaskWorktree`) is what depends on getting it right.
 ///
-/// Shared with [`crate::agent_tree_editor::open_in_editor`], which applies it to
-/// the selection path before handing it to an editor — one guard, so the two
-/// cannot drift apart on which components they consider safe.
+/// Shared with [`crate::agent_tree_open_set::read_open_set`], which applies it
+/// to every path it reads back off disk — one guard, so the two cannot drift
+/// apart on which components they consider safe.
 pub(crate) fn relative_components(path: &Path) -> Option<Vec<OsString>> {
     use std::path::Component;
 
@@ -424,15 +424,14 @@ fn compute_counts(node: &mut TreeNode) -> Option<LineCounts> {
         return node.counts;
     }
 
-    let mut total: Option<LineCounts> = None;
-    for child in &mut node.children {
-        if let Some(child_counts) = compute_counts(child) {
-            total = Some(match total {
-                Some(running) => running.merge(child_counts),
-                None => child_counts,
-            });
-        }
-    }
+    // `filter_map` drops the descendants with no counts and `reduce` yields
+    // `None` when every one of them did — which is exactly the rule this pass
+    // exists for, expressed rather than assembled.
+    let total = node
+        .children
+        .iter_mut()
+        .filter_map(compute_counts)
+        .reduce(std::ops::Add::add);
     node.counts = total;
     total
 }

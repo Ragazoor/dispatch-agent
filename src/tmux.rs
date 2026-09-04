@@ -945,91 +945,20 @@ fn split_pane_row(line: &str) -> Option<(&str, &str)> {
     (!line.is_empty()).then(|| line.split_once(' ').unwrap_or((line, "")))
 }
 
-/// Pane ids in `target`'s window whose `field` (a tmux format expression)
-/// satisfies `matches`. The predicate receives the field's whole value, which may
-/// contain spaces and is empty when the field is unset.
+/// Every dispatch-created pane in `target`'s window, paired with the role it
+/// was marked with.
+///
+/// **The primitive the other two lookups are built on.** All three ask tmux the
+/// same question over the same `list-panes` shape and differ only in what they
+/// keep, so the command construction, the `-F` format and the "an unmarked pane
+/// is the agent's own" filter live here once. A caller that needs more than one
+/// role at a time — the toggle, which retires the tree and takes the diff pane
+/// with it — would otherwise pay a round-trip per role and, worse, read the
+/// window at two different moments.
 ///
 /// `target` may be a window name or a pane id. A pane id resolves to *its own*
 /// window's panes, which is what lets a process inside a pane look up its
 /// siblings knowing only `$TMUX_PANE`.
-///
-/// Private: the two wrappers below are the vocabulary callers should reach for,
-/// so that "which field identifies a pane" stays a decision made here rather than
-/// at every call site.
-fn pane_ids_matching(
-    target: &str,
-    field: &str,
-    matches: impl Fn(&str) -> bool,
-    runner: &dyn ProcessRunner,
-) -> Result<Vec<String>> {
-    let resolved = window_target(target, runner)?;
-    let format = format!("#{{pane_id}} {field}");
-    let out = run_checked_stdout(
-        runner,
-        &["list-panes", "-t", &resolved, "-F", &format],
-        "list-panes",
-    )?;
-    Ok(out
-        .lines()
-        .filter_map(split_pane_row)
-        .filter(|(_, value)| matches(value))
-        .map(|(id, _)| id.to_string())
-        .collect())
-}
-
-/// Pane ids in `target`'s window whose pane-scoped user option `option` is set to
-/// a non-empty value — *any* value.
-///
-/// This is how dispatch asks "which panes in this window did I create?", over
-/// [`PANE_ROLE_OPTION`]: the marker is written at creation ([`set_pane_option`])
-/// and survives [`respawn_pane_running`], so a pane is identified by what it is
-/// rather than by whether it happens to be the focused one — which is the
-/// heuristic this replaced, true only for an untouched two-pane window. Use
-/// [`pane_ids_with_option_value`] to ask for one specific role.
-pub fn pane_ids_with_option(
-    target: &str,
-    option: &str,
-    runner: &dyn ProcessRunner,
-) -> Result<Vec<String>> {
-    pane_ids_matching(
-        target,
-        &option_format(option),
-        |value| !value.is_empty(),
-        runner,
-    )
-}
-
-/// Pane ids in `target`'s window whose pane-scoped user option `option` equals
-/// `value` exactly.
-///
-/// The role-specific half of [`pane_ids_with_option`]: exact equality, never a
-/// prefix or substring, because the roles of two panes in one window must not be
-/// able to stand in for each other.
-pub fn pane_ids_with_option_value(
-    target: &str,
-    option: &str,
-    value: &str,
-    runner: &dyn ProcessRunner,
-) -> Result<Vec<String>> {
-    pane_ids_matching(
-        target,
-        &option_format(option),
-        |found| found == value,
-        runner,
-    )
-}
-
-/// Every dispatch-created pane in `target`'s window, paired with the role it was
-/// marked with.
-///
-/// The two lookups above each answer one question and cost one `list-panes`
-/// call. A caller that needs to act on more than one role at once — the toggle,
-/// which hides the tree and takes the diff pane with it — would otherwise pay a
-/// round-trip per role and, worse, read the window at two different moments.
-/// This asks once and answers both.
-///
-/// Panes with the option unset are excluded, exactly as in
-/// [`pane_ids_with_option`]: an unmarked pane is the agent's own.
 pub fn pane_roles(
     target: &str,
     option: &str,
@@ -1050,8 +979,48 @@ pub fn pane_roles(
         .collect())
 }
 
+/// Pane ids in `target`'s window whose pane-scoped user option `option` is set to
+/// a non-empty value — *any* value.
+///
+/// This is how dispatch asks "which panes in this window did I create?", over
+/// [`PANE_ROLE_OPTION`]: the marker is written at creation ([`set_pane_option`])
+/// and survives [`respawn_pane_running`], so a pane is identified by what it is
+/// rather than by whether it happens to be the focused one — which is the
+/// heuristic this replaced, true only for an untouched two-pane window. Use
+/// [`pane_ids_with_option_value`] to ask for one specific role.
+pub fn pane_ids_with_option(
+    target: &str,
+    option: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<String>> {
+    Ok(pane_roles(target, option, runner)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// Pane ids in `target`'s window whose pane-scoped user option `option` equals
+/// `value` exactly.
+///
+/// The role-specific half of [`pane_ids_with_option`]: exact equality, never a
+/// prefix or substring, because the roles of two panes in one window must not be
+/// able to stand in for each other.
+pub fn pane_ids_with_option_value(
+    target: &str,
+    option: &str,
+    value: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<String>> {
+    Ok(pane_roles(target, option, runner)?
+        .into_iter()
+        .filter(|(_, role)| role == value)
+        .map(|(id, _)| id)
+        .collect())
+}
+
 /// The tmux format expression that expands to user option `option`'s value.
-/// Stated once so the three lookups above cannot spell it differently.
+/// Read only by [`pane_roles`], which is the one place the lookups' command is
+/// built.
 fn option_format(option: &str) -> String {
     format!("#{{{option}}}")
 }

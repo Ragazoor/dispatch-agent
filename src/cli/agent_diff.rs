@@ -18,25 +18,19 @@
 //! never do.
 
 use std::collections::BTreeSet;
-use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
+use crate::agent_tree::parse_untracked;
 use crate::cli::agent_tree::{fork_point, run_git, REFRESH_INTERVAL};
-use crate::db::{Database, TaskRead};
-use crate::models::TaskId;
 use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
 
@@ -47,7 +41,7 @@ use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
 /// would do depending on sort order. Matches `config.agent_tree_diff_max_bytes`
 /// in `docs/specs/agent-tree.allium`.
 ///
-/// Bounded for the same reason [`GIT_TIMEOUT`] is: rendering runs inline in a
+/// Bounded for the same reason the shared git timeout is: rendering runs inline in a
 /// single-threaded loop that also has to answer keypresses, so an unbounded
 /// diff is an unbounded freeze.
 pub const DIFF_MAX_BYTES: usize = 1_048_576;
@@ -79,33 +73,34 @@ impl DiffRefusal {
     }
 }
 
-/// One file's diff, or the reason there is none.
+/// What the pane has to show for one open file: git's patch, or the reason
+/// there isn't one.
 ///
-/// Exactly one of `body` and `refusal` is set — the pane always has something
-/// to draw for an open file, and the user is never left looking at a blank
-/// region wondering whether it is still loading. See the spec's
-/// `DiffBodyExcludesRefusal`.
+/// A sum type rather than a pair of nullable fields, for exactly the reason
+/// [`crate::agent_tree::LineCounts`] is one value rather than two: the pane
+/// always has something to draw for an open file, and "neither" would leave the
+/// user looking at a blank region wondering whether it was still loading. The
+/// spec states that as `DiffBodyExcludesRefusal`; here it is unrepresentable
+/// rather than merely forbidden, so there is no constructor to uphold it and no
+/// unreachable arm to explain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileDiffContent {
+    Shown(String),
+    Refused(DiffRefusal),
+}
+
+/// One open file, and what to draw for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub path: PathBuf,
-    pub body: Option<String>,
-    pub refusal: Option<DiffRefusal>,
+    pub content: FileDiffContent,
 }
 
 impl FileDiff {
-    fn shown(path: &Path, body: String) -> Self {
+    fn new(path: &Path, content: FileDiffContent) -> Self {
         Self {
             path: path.to_path_buf(),
-            body: Some(body),
-            refusal: None,
-        }
-    }
-
-    fn refused(path: &Path, refusal: DiffRefusal) -> Self {
-        Self {
-            path: path.to_path_buf(),
-            body: None,
-            refusal: Some(refusal),
+            content,
         }
     }
 }
@@ -146,7 +141,10 @@ pub fn file_diff(
     runner: &dyn ProcessRunner,
 ) -> Result<Option<FileDiff>> {
     if untracked.contains(path) {
-        return Ok(Some(FileDiff::refused(path, DiffRefusal::Untracked)));
+        return Ok(Some(FileDiff::new(
+            path,
+            FileDiffContent::Refused(DiffRefusal::Untracked),
+        )));
     }
 
     let root = root.to_string_lossy().into_owned();
@@ -169,84 +167,90 @@ pub fn file_diff(
     if diff.trim().is_empty() {
         return Ok(None);
     }
-    if is_binary_notice(&diff) {
-        return Ok(Some(FileDiff::refused(path, DiffRefusal::Binary)));
-    }
-    if diff.len() > DIFF_MAX_BYTES {
-        return Ok(Some(FileDiff::refused(path, DiffRefusal::TooLarge)));
-    }
-    Ok(Some(FileDiff::shown(path, diff)))
+    let content = if is_binary_notice(&diff) {
+        FileDiffContent::Refused(DiffRefusal::Binary)
+    } else if diff.len() > DIFF_MAX_BYTES {
+        FileDiffContent::Refused(DiffRefusal::TooLarge)
+    } else {
+        FileDiffContent::Shown(diff)
+    };
+    Ok(Some(FileDiff::new(path, content)))
 }
 
-/// The tick's untracked listing, as a set of paths relative to `root`.
+/// Which of `open` git considers untracked, as paths relative to `root`.
 ///
-/// Taken once per refresh and shared across every open path — see
-/// [`file_diff`]'s `untracked` argument.
-pub fn untracked_paths(root: &Path, runner: &dyn ProcessRunner) -> Result<BTreeSet<PathBuf>> {
+/// Taken once per rebuild and shared across every open path — see [`file_diff`]'s
+/// `untracked` argument.
+///
+/// Bounded by `open` as a pathspec rather than listing the whole worktree: only
+/// membership for the open paths is ever asked, and an unbounded listing walks
+/// every untracked file there is — unbounded work in a repo with untracked build
+/// output, to answer a question about a handful of paths.
+///
+/// The argv and the parsing are the tree's, not a second copy
+/// ([`crate::agent_tree::parse_untracked`]). The tree's `[Added]` badge and this
+/// pane's "not yet staged" placeholder are answers to the SAME question about
+/// the same file, so a flag added to one query and not the other would leave the
+/// two panes disagreeing about a path — the same drift `git_changes` guards
+/// against by making its two diffs share a baseline.
+pub fn untracked_paths(
+    root: &Path,
+    open: &BTreeSet<PathBuf>,
+    runner: &dyn ProcessRunner,
+) -> Result<BTreeSet<PathBuf>> {
     let root = root.to_string_lossy().into_owned();
-    let listing = run_git(
-        runner,
-        &[
-            "-C",
-            &root,
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ],
-    )?;
-    Ok(listing
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
+    let paths: Vec<String> = open
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut args: Vec<&str> = vec![
+        "-C",
+        &root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    let listing = run_git(runner, &args)?;
+    Ok(parse_untracked(&listing)
+        .into_iter()
+        .map(|change| change.path)
         .collect())
 }
 
 /// The whole document the pane shows: every open file's diff, in tree order,
-/// under its own path heading.
+/// each under its own path heading.
 ///
 /// ONE document, not one region per file. Scrolling past the end of one file
 /// reaches the top of the next without a keystroke in between, and there is no
 /// per-file cursor to keep track of.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DiffDocument {
-    pub files: Vec<FileDiff>,
-}
-
-impl DiffDocument {
-    /// The document as rendered lines, each already tagged with how it should
-    /// be coloured. Built once per change rather than per frame, because
-    /// scrolling redraws far more often than git answers differently.
-    pub fn lines(&self) -> Vec<DiffLine> {
-        let mut lines = Vec::new();
-        for file in &self.files {
-            lines.push(DiffLine {
-                kind: DiffLineKind::Heading,
-                text: file.path.to_string_lossy().into_owned(),
-            });
-            match (&file.body, file.refusal) {
-                (Some(body), _) => {
-                    for line in body.lines() {
-                        lines.push(DiffLine {
-                            kind: DiffLineKind::of(line),
-                            text: line.to_owned(),
-                        });
-                    }
-                }
-                (None, Some(refusal)) => lines.push(DiffLine {
-                    kind: DiffLineKind::Refusal,
-                    text: refusal.message().to_owned(),
-                }),
-                // Unreachable through `file_diff`, which never builds a
-                // `FileDiff` with neither — see DiffBodyExcludesRefusal. Left
-                // as an empty heading rather than a panic: this runs in a
-                // render path, and a blank section is a better failure than a
-                // dead pane.
-                (None, None) => {}
+///
+/// Takes the files by value and consumes them: each is rendered once, and
+/// reusing the patch's own `String` rather than copying it out line by line is
+/// what keeps a megabyte diff from being materialised twice.
+fn document_lines(files: Vec<FileDiff>) -> Vec<DiffLine> {
+    let mut lines = Vec::new();
+    for file in files {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Heading,
+            text: file.path.to_string_lossy().into_owned(),
+        });
+        match file.content {
+            FileDiffContent::Shown(body) => {
+                lines.extend(body.lines().map(|line| DiffLine {
+                    kind: DiffLineKind::of(line),
+                    text: line.to_owned(),
+                }));
             }
+            FileDiffContent::Refused(refusal) => lines.push(DiffLine {
+                kind: DiffLineKind::Refusal,
+                text: refusal.message().to_owned(),
+            }),
         }
-        lines
     }
+    lines
 }
 
 /// How one rendered line should be coloured.
@@ -303,14 +307,14 @@ pub fn build_document(
     open: &BTreeSet<PathBuf>,
     untracked: &BTreeSet<PathBuf>,
     runner: &dyn ProcessRunner,
-) -> Result<DiffDocument> {
+) -> Result<Vec<DiffLine>> {
     let mut files = Vec::new();
     for path in open {
         if let Some(diff) = file_diff(root, baseline, path, untracked, runner)? {
             files.push(diff);
         }
     }
-    Ok(DiffDocument { files })
+    Ok(document_lines(files))
 }
 
 /// The pane's view state: where the document is scrolled to, and the notice in
@@ -405,19 +409,23 @@ pub fn handle_key(state: &mut DiffState, line_count: usize, key: KeyEvent) -> Di
     // keypress is the earliest moment the user has demonstrably seen it.
     state.notice = None;
 
-    // `gg`: a lone `g` arms the chord and does nothing else. Any other key
-    // disarms it and is then handled normally, so a lone `g` is never
-    // observable as anything but a swallowed keystroke.
+    // The `gg` chord, resolved before anything else so every other arm below can
+    // assume no chord is in flight. Taking the flag disarms it unconditionally:
+    // a second `g` completes the chord, and any other key falls through to its
+    // own arm having quietly cancelled it. Spelled exactly as the tree pane
+    // spells it — same semantics, same shape, so a fix to one is obviously a fix
+    // to the other. See AgentTreeGgChordNeverExpires in
+    // docs/specs/agent-tree.allium: there is no deadline, so the only thing that
+    // can end a pending chord is the next key, whenever it comes.
+    let was_pending_g = std::mem::take(&mut state.pending_g);
     if key.code == KeyCode::Char('g') && !key.modifiers.contains(KeyModifiers::CONTROL) {
-        if state.pending_g {
-            state.pending_g = false;
+        if was_pending_g {
             state.offset = 0;
         } else {
             state.pending_g = true;
         }
         return DiffKeyAction::Continue;
     }
-    state.pending_g = false;
 
     let half_page = state.half_page();
     match key.code {
@@ -473,7 +481,10 @@ pub fn render(frame: &mut Frame, area: Rect, lines: &[DiffLine], state: &mut Dif
         block = block.title_bottom(notice.as_str());
     }
 
-    let visible: Vec<Line> = lines
+    // Borrowed, not cloned: `lines` outlives this call, so the spans can point
+    // into it. Cloning here allocated a `String` per visible row on every
+    // frame — a few dozen allocations a second, dropped unread.
+    let visible: Vec<Line<'_>> = lines
         .iter()
         .skip(state.offset)
         .take(state.viewport_rows)
@@ -486,7 +497,7 @@ pub fn render(frame: &mut Frame, area: Rect, lines: &[DiffLine], state: &mut Dif
                 DiffLineKind::Context => Style::default().fg(FG),
                 DiffLineKind::Refusal => Style::default().fg(YELLOW).add_modifier(Modifier::ITALIC),
             };
-            Line::from(Span::styled(line.text.clone(), style))
+            Line::from(Span::styled(line.text.as_str(), style))
         })
         .collect();
 
@@ -559,31 +570,18 @@ fn refresh(
 
     if open.is_empty() {
         state.notice = None;
-        last.open.clear();
-        last.fingerprint.clear();
+        *last = LastSeen::default();
         lines.clear();
         return;
     }
 
-    let rebuilt = (|| -> Result<Option<Vec<DiffLine>>> {
-        let baseline = fork_point(&root.to_string_lossy(), base_branch, runner)?;
-        let fingerprint = open_files_fingerprint(root, &baseline, &open, runner)?;
-        if open == last.open && fingerprint == last.fingerprint {
-            return Ok(None);
-        }
-        let untracked = untracked_paths(root, runner)?;
-        let document = build_document(root, &baseline, &open, &untracked, runner)?;
-        last.open = open.clone();
-        last.fingerprint = fingerprint;
-        Ok(Some(document.lines()))
-    })();
-
-    match rebuilt {
-        Ok(Some(fresh)) => {
+    match rebuild(root, base_branch, &open, runner, last) {
+        Ok(fresh) => {
             state.notice = None;
-            *lines = fresh;
+            if let Some(fresh) = fresh {
+                *lines = fresh;
+            }
         }
-        Ok(None) => state.notice = None,
         Err(e) => {
             tracing::warn!(
                 root = %root.display(),
@@ -597,6 +595,31 @@ fn refresh(
             state.notice = Some(format!("{e:#}"));
         }
     }
+}
+
+/// Re-read the open files' diffs, or `None` when nothing has moved since the
+/// last pass.
+///
+/// Split out of [`refresh`] so the "did anything change" decision and the
+/// notice handling stay separable: everything here either answers with fresh
+/// lines or fails, and `refresh` decides what a failure looks like to the user.
+fn rebuild(
+    root: &Path,
+    base_branch: &str,
+    open: &BTreeSet<PathBuf>,
+    runner: &dyn ProcessRunner,
+    last: &mut LastSeen,
+) -> Result<Option<Vec<DiffLine>>> {
+    let baseline = fork_point(&root.to_string_lossy(), base_branch, runner)?;
+    let fingerprint = open_files_fingerprint(root, &baseline, open, runner)?;
+    if *open == last.open && fingerprint == last.fingerprint {
+        return Ok(None);
+    }
+    let untracked = untracked_paths(root, open, runner)?;
+    let lines = build_document(root, &baseline, open, &untracked, runner)?;
+    last.open = open.clone();
+    last.fingerprint = fingerprint;
+    Ok(Some(lines))
 }
 
 fn run_loop<B: Backend>(
@@ -644,35 +667,11 @@ fn run_loop<B: Backend>(
 /// disagree about which worktree they are looking at, and so this pane resolves
 /// the baseline from the same `base_branch` the tree does.
 pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
-    let database = Database::open(db_path).await?;
-    let task = database
-        .get_task(TaskId(task_id))
-        .await?
-        .with_context(|| format!("task {task_id} not found"))?;
-    let base_branch = task.base_branch.clone();
-    let worktree = task
-        .worktree
-        .with_context(|| format!("task {task_id} has no worktree"))?;
-    let root = PathBuf::from(worktree);
+    let (root, base_branch) = crate::cli::pane_task_context(db_path, task_id).await?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = run_loop(
-        &mut terminal,
-        &root,
-        &base_branch,
-        &RealProcessRunner::default(),
-    );
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
+    crate::cli::with_pane_terminal(|terminal| {
+        run_loop(terminal, &root, &base_branch, &RealProcessRunner::default())
+    })
 }
 
 #[cfg(test)]
@@ -712,8 +711,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(diff.body.as_deref(), Some(A_PATCH));
-        assert_eq!(diff.refusal, None);
+        assert_eq!(diff.content, FileDiffContent::Shown(A_PATCH.to_owned()));
     }
 
     /// The same baseline the tree resolved, and `--` so a path that looks like
@@ -754,8 +752,10 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(diff.refusal, Some(DiffRefusal::Untracked));
-        assert_eq!(diff.body, None);
+        assert_eq!(
+            diff.content,
+            FileDiffContent::Refused(DiffRefusal::Untracked)
+        );
         assert!(runner.flattened_calls().is_empty());
     }
 
@@ -775,7 +775,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(diff.refusal, Some(DiffRefusal::Binary));
+        assert_eq!(diff.content, FileDiffContent::Refused(DiffRefusal::Binary));
     }
 
     /// The notice is matched at the START of a line, so a patch that merely
@@ -796,8 +796,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(diff.refusal, None);
-        assert_eq!(diff.body.as_deref(), Some(body));
+        assert_eq!(diff.content, FileDiffContent::Shown(body.to_owned()));
     }
 
     #[test]
@@ -818,8 +817,10 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(diff.refusal, Some(DiffRefusal::TooLarge));
-        assert_eq!(diff.body, None);
+        assert_eq!(
+            diff.content,
+            FileDiffContent::Refused(DiffRefusal::TooLarge)
+        );
     }
 
     /// A path the user opened and the agent then reverted. Not an error, not a
@@ -873,17 +874,36 @@ mod tests {
 
     // -- untracked_paths ---------------------------------------------------
 
+    /// One listing for the whole rebuild, and BOUNDED by the open paths: only
+    /// membership for those is ever asked, and an unbounded listing walks every
+    /// untracked file in the worktree to answer it.
     #[test]
-    fn the_untracked_listing_is_taken_once_for_the_whole_tick() {
+    fn the_untracked_listing_is_taken_once_and_bounded_by_the_open_paths() {
         let runner = diff_rig("new.rs\0docs/my notes.md\0");
+        let open = untracked_set(&["new.rs", "docs/my notes.md", "tracked.rs"]);
 
-        let paths = untracked_paths(Path::new("/wt"), &runner).unwrap();
+        let paths = untracked_paths(Path::new("/wt"), &open, &runner).unwrap();
 
         assert_eq!(paths, untracked_set(&["new.rs", "docs/my notes.md"]));
         assert_eq!(
             runner.flattened_calls(),
-            vec!["git -C /wt ls-files --others --exclude-standard -z".to_string()]
+            vec![concat!(
+                "git -C /wt ls-files --others --exclude-standard -z -- ",
+                "docs/my notes.md new.rs tracked.rs"
+            )
+            .to_string()]
         );
+    }
+
+    /// The pathspec is the open set, so a path git does not report back is
+    /// tracked — which is what makes the placeholder a statement about the
+    /// file rather than about the query.
+    #[test]
+    fn a_tracked_open_path_is_absent_from_the_untracked_answer() {
+        let runner = diff_rig("");
+        let paths =
+            untracked_paths(Path::new("/wt"), &untracked_set(&["tracked.rs"]), &runner).unwrap();
+        assert!(paths.is_empty());
     }
 }
 
@@ -912,8 +932,18 @@ mod document_tests {
         )
     }
 
-    fn texts(doc: &DiffDocument) -> Vec<String> {
-        doc.lines().into_iter().map(|l| l.text).collect()
+    fn texts(lines: &[DiffLine]) -> Vec<String> {
+        lines.iter().map(|l| l.text.clone()).collect()
+    }
+
+    /// The path heading that opens each file's section — the document's own
+    /// account of which files it is showing, and in what order.
+    fn headings(lines: &[DiffLine]) -> Vec<String> {
+        lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Heading)
+            .map(|l| l.text.clone())
+            .collect()
     }
 
     /// Tree order, not the order the user opened them in: the tree is the index
@@ -931,11 +961,7 @@ mod document_tests {
         )
         .unwrap();
 
-        let headings: Vec<_> = doc.files.iter().map(|f| f.path.clone()).collect();
-        assert_eq!(
-            headings,
-            vec![PathBuf::from("a.rs"), PathBuf::from("src/lib.rs")]
-        );
+        assert_eq!(headings(&doc), vec!["a.rs", "src/lib.rs"]);
         assert_eq!(texts(&doc)[0], "a.rs");
     }
 
@@ -972,10 +998,15 @@ mod document_tests {
         )
         .unwrap();
 
-        assert_eq!(doc.files.len(), 3);
-        assert!(doc.files[0].body.is_some());
-        assert_eq!(doc.files[1].refusal, Some(DiffRefusal::Untracked));
-        assert!(doc.files[2].body.is_some());
+        assert_eq!(headings(&doc), vec!["a.rs", "new.rs", "z.rs"]);
+        let lines = texts(&doc);
+        // The refusal sits between the two patches, and both patches rendered.
+        assert!(lines.iter().any(|l| l.contains("not yet staged")));
+        assert_eq!(
+            lines.iter().filter(|l| l.starts_with("@@")).count(),
+            2,
+            "both neighbours must still have their hunks; got {lines:?}"
+        );
     }
 
     /// The agent reverted a file the user had open. It renders nothing and
@@ -993,8 +1024,7 @@ mod document_tests {
         )
         .unwrap();
 
-        assert_eq!(doc.files.len(), 1);
-        assert_eq!(doc.files[0].path, PathBuf::from("b.rs"));
+        assert_eq!(headings(&doc), vec!["b.rs"]);
     }
 
     #[test]
@@ -1008,7 +1038,7 @@ mod document_tests {
             &runner,
         )
         .unwrap();
-        assert!(doc.lines().is_empty());
+        assert!(doc.is_empty());
     }
 
     #[test]
@@ -1023,7 +1053,7 @@ mod document_tests {
         )
         .unwrap();
 
-        let kinds: Vec<_> = doc.lines().into_iter().map(|l| l.kind).collect();
+        let kinds: Vec<_> = doc.iter().map(|l| l.kind).collect();
         assert_eq!(
             kinds,
             vec![

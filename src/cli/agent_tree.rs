@@ -14,17 +14,12 @@
 //! spec's old `TreeScanExclusions` question.
 
 use std::collections::{BTreeSet, HashSet};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -36,8 +31,6 @@ use crate::agent_tree::{
     attach_line_counts, build_tree, parse_name_status, parse_numstat, parse_untracked, FileChange,
     GitFileChange, TreeNode, TreeNodeKind,
 };
-use crate::db::{Database, TaskRead};
-use crate::models::TaskId;
 use crate::process::{stderr_str, ProcessRunner, RealProcessRunner};
 use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
 
@@ -117,13 +110,6 @@ fn count_spans(node: &TreeNode) -> Vec<Span<'static>> {
     ]
 }
 
-/// One rendered row: the name, then the badge if the node has one, then the
-/// line counts if it has any.
-///
-/// A directory reaches the counts too. It carries no badge — git says nothing
-/// about directories, and `OnlyFilesCarryBadges` holds that — but it does carry
-/// the sum over everything beneath it, which is what lets a collapsed directory
-/// say how much is inside without being opened.
 /// Marks a file whose diff is open in the pane below. Rendered for every FILE
 /// row, as the marker or as a blank of the same width, so the names stay in one
 /// column whatever is open — a marker that shifted its neighbours would make
@@ -135,6 +121,13 @@ fn count_spans(node: &TreeNode) -> Vec<Span<'static>> {
 const DIFF_OPEN_MARKER: &str = "\u{25cf} ";
 const DIFF_CLOSED_MARKER: &str = "  ";
 
+/// One rendered row: the open marker on a file, the name, then the badge if the
+/// node has one, then the line counts if it has any.
+///
+/// A directory reaches the counts too. It carries no badge — git says nothing
+/// about directories, and `OnlyFilesCarryBadges` holds that — but it does carry
+/// the sum over everything beneath it, which is what lets a collapsed directory
+/// say how much is inside without being opened.
 fn node_label(node: &TreeNode, diff_open: bool) -> Line<'static> {
     let mut spans = Vec::new();
     if node.kind == TreeNodeKind::File {
@@ -172,17 +165,22 @@ fn node_label(node: &TreeNode, diff_open: bool) -> Line<'static> {
 fn node_to_item(
     node: &TreeNode,
     path: &mut Vec<String>,
+    relative: &mut PathBuf,
     open_diffs: &BTreeSet<PathBuf>,
 ) -> Option<TreeItem<'static, String>> {
     path.push(node.name.clone());
-    // `path` now names this node relative to the root, which is exactly the
-    // shape the open set holds — see `RenderState::open_diffs`.
-    let diff_open = open_diffs.contains(&path.iter().collect::<PathBuf>());
+    // `relative` now names this node below the root, which is exactly the shape
+    // the open set holds — see `RenderState::open_diffs`. Pushed and popped
+    // alongside `path` rather than re-joined from it per node: this runs for
+    // every node on every frame, and rebuilding the whole path each time is
+    // work the walk has already done.
+    relative.push(&node.name);
+    let diff_open = open_diffs.contains(relative.as_path());
     let label = node_label(node, diff_open);
     let item = match node.kind {
         TreeNodeKind::File => Some(TreeItem::new_leaf(node.name.clone(), label)),
         TreeNodeKind::Directory => {
-            let children = to_items(&node.children, path, open_diffs);
+            let children = to_items(&node.children, path, relative, open_diffs);
             match TreeItem::new(node.name.clone(), label, children) {
                 Ok(item) => Some(item),
                 Err(e) => {
@@ -197,17 +195,19 @@ fn node_to_item(
         }
     };
     path.pop();
+    relative.pop();
     item
 }
 
 fn to_items(
     children: &[TreeNode],
     path: &mut Vec<String>,
+    relative: &mut PathBuf,
     open_diffs: &BTreeSet<PathBuf>,
 ) -> Vec<TreeItem<'static, String>> {
     children
         .iter()
-        .filter_map(|node| node_to_item(node, path, open_diffs))
+        .filter_map(|node| node_to_item(node, path, relative, open_diffs))
         .collect()
 }
 
@@ -226,7 +226,12 @@ pub fn build_tree_items(
     root: &TreeNode,
     open_diffs: &BTreeSet<PathBuf>,
 ) -> Vec<TreeItem<'static, String>> {
-    to_items(&root.children, &mut Vec::new(), open_diffs)
+    to_items(
+        &root.children,
+        &mut Vec::new(),
+        &mut PathBuf::new(),
+        open_diffs,
+    )
 }
 
 /// The commit where this worktree forked from `git_ref`, or git's own error if
@@ -530,12 +535,8 @@ impl RenderState {
         (self.viewport_rows / 2).max(1)
     }
 
-    /// Clear a notice left by a failed git query, leaving an editor-open notice
-    /// alone. Called after every SUCCESSFUL query: a working git retracts its
-    /// own complaint, but must not swallow the answer to a keypress the user
-    /// made moments ago (`RefreshAgentTree`'s clearing expression).
     /// The paths whose diffs are open, in tree order — which is `BTreeSet`'s
-    /// own order, since a path sorts by its segments.
+    /// own order, since a `Path` sorts by its components.
     pub fn open_diffs(&self) -> &BTreeSet<PathBuf> {
         &self.open_diffs
     }
@@ -567,6 +568,10 @@ impl RenderState {
         self.open_diffs = collect_file_paths(root);
     }
 
+    /// Clear a notice left by a failed git query, leaving a diff-open notice
+    /// alone. Called after every SUCCESSFUL query: a working git retracts its
+    /// own complaint, but must not swallow the answer to a keypress the user
+    /// made moments ago (`RefreshAgentTree`'s clearing expression).
     fn clear_git_notice(&mut self) {
         if matches!(self.notice, Some(Notice::Git(_))) {
             self.notice = None;
@@ -835,36 +840,42 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
     KeyAction::Continue
 }
 
-/// What the loop needs to keep the diff pane in step with the open set: which
-/// database and task the pane below should read, and the worktree it starts in.
+/// Everything the loop needs to keep the diff pane in step with the open set:
+/// the worktree both panes read, and which database and task the pane below
+/// should open.
 ///
-/// Bundled rather than passed as four more arguments because they travel
-/// together and none of them means anything without the others.
+/// Bundled because they travel together and none means anything without the
+/// others — `root` alone cannot name the pane's task, and the task id alone
+/// cannot say which database holds it.
 pub(crate) struct DiffPaneContext<'a> {
+    pub root: &'a Path,
     pub db_path: &'a Path,
     pub task_id: i64,
 }
 
 /// Publish the open set and make the panes agree with it.
 ///
-/// Both halves are best-effort and both report through the pane's own notice,
-/// because both are the direct answer to a keypress the user just made. The
-/// renderer keeps running either way: a diff pane that will not open must not
-/// take the tree with it (docs/specs/agent-tree.allium:
-/// `AgentTreeDiffPaneFailureIsVisible`).
+/// Both halves report through the pane's own notice, because both are the
+/// direct answer to a keypress the user just made. The renderer keeps running
+/// either way: a diff pane that will not open must not take the tree with it
+/// (docs/specs/agent-tree.allium: `AgentTreeDiffPaneFailureIsVisible`).
 ///
 /// The open set is left ALONE by a failure here. The user asked for a file to
 /// be open and it is open; what failed is showing it, and the next toggle
 /// retries rather than making them re-open everything.
+///
+/// Also the teardown path, called with an emptied set — see
+/// [`tear_down_diff_pane`]. Publishing "nothing is open" is exactly what
+/// retiring the pane means, so the two are one function rather than two that
+/// must stay in step.
 fn publish_open_set(
-    root: &Path,
     context: &DiffPaneContext<'_>,
     state: &mut RenderState,
     runner: &dyn ProcessRunner,
 ) {
-    let root_str = root.to_string_lossy().into_owned();
-    if let Err(e) = crate::agent_tree_open_set::write_open_set(&root_str, &state.open_diffs) {
-        tracing::warn!(root = %root.display(), error = %format!("{e:#}"), "failed to record the open set");
+    let root = context.root.to_string_lossy().into_owned();
+    if let Err(e) = crate::agent_tree_open_set::write_open_set(&root, &state.open_diffs) {
+        tracing::warn!(root, error = %format!("{e:#}"), "failed to record the open set");
         state.notice = Some(Notice::diff(format!("{e:#}")));
         return;
     }
@@ -881,7 +892,7 @@ fn publish_open_set(
         &my_pane,
         context.db_path,
         context.task_id,
-        root,
+        context.root,
         !state.open_diffs.is_empty(),
         runner,
     ) {
@@ -890,43 +901,32 @@ fn publish_open_set(
     }
 }
 
-/// Leave nothing behind: empty the open set and take the diff pane with the
-/// tree.
+/// Leave nothing behind on the way out: empty the open set, which retires the
+/// diff pane with it.
 ///
 /// A diff pane outliving its tree is orphaned — nothing drives its open set,
 /// nothing refreshes it, and the toggle that would bring the tree back does not
 /// act on it. See `KillAgentTreeDiffPaneWithItsTree` in
 /// docs/specs/agent-tree.allium.
 ///
-/// Every failure is logged and swallowed: this runs while the renderer is
-/// already leaving, so there is nowhere left to show a notice.
-fn tear_down_diff_pane(root: &Path, context: &DiffPaneContext<'_>, runner: &dyn ProcessRunner) {
-    let root_str = root.to_string_lossy().into_owned();
-    if let Err(e) = crate::agent_tree_open_set::clear_open_set(&root_str) {
-        tracing::warn!(error = %format!("{e:#}"), "failed to clear the open set on exit");
-    }
-    let Ok(my_pane) = crate::agent_tree_diff_pane::current_pane_from_env() else {
-        return;
-    };
-    if let Err(e) = crate::agent_tree_diff_pane::reconcile_diff_pane(
-        &my_pane,
-        context.db_path,
-        context.task_id,
-        root,
-        false,
-        runner,
-    ) {
-        tracing::warn!(error = %format!("{e:#}"), "failed to close the diff pane on exit");
-    }
+/// Whatever notice this leaves behind goes unread, which is correct: the
+/// renderer is already leaving and there is nowhere left to show one.
+fn tear_down_diff_pane(
+    context: &DiffPaneContext<'_>,
+    state: &mut RenderState,
+    runner: &dyn ProcessRunner,
+) {
+    state.open_diffs.clear();
+    publish_open_set(context, state, runner);
 }
 
 fn run_loop<B: Backend>(
     terminal: &mut Terminal<B>,
-    root: &Path,
     base_branch: &str,
     context: &DiffPaneContext<'_>,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
+    let root = context.root;
     let mut state = RenderState::new();
     let mut tree = build_tree(root, &[]);
     // `build_tree` names the root node after the worktree directory, which is
@@ -953,12 +953,12 @@ fn run_loop<B: Backend>(
             }
             match handle_key(&mut state, &tree, key) {
                 KeyAction::Exit => {
-                    tear_down_diff_pane(root, context, runner);
+                    tear_down_diff_pane(context, &mut state, runner);
                     return Ok(());
                 }
                 KeyAction::Continue => {}
                 KeyAction::DiffSetChanged => {
-                    publish_open_set(root, context, &mut state, runner);
+                    publish_open_set(context, &mut state, runner);
                 }
             }
             continue;
@@ -1022,41 +1022,25 @@ fn refresh(
 /// doc comment). Resolves the task's worktree and base branch from the DB once,
 /// then re-queries git on a 1-second timer.
 pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
-    let database = Database::open(db_path).await?;
-    let task = database
-        .get_task(TaskId(task_id))
-        .await?
-        .with_context(|| format!("task {task_id} not found"))?;
-    let base_branch = task.base_branch.clone();
-    let worktree = task
-        .worktree
-        .with_context(|| format!("task {task_id} has no worktree"))?;
-    let root = PathBuf::from(worktree);
-
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let (root, base_branch) = crate::cli::pane_task_context(db_path, task_id).await?;
 
     // Start from a clean slate. The open set is view state, like the cursor and
     // the manual expansions, and a set left behind by a killed renderer
     // describes nothing — see the AgentTreeCompanionPane surface's guidance.
     let _ = crate::agent_tree_open_set::clear_open_set(&root.to_string_lossy());
 
-    let result = run_loop(
-        &mut terminal,
-        &root,
-        &base_branch,
-        &DiffPaneContext { db_path, task_id },
-        &RealProcessRunner::default(),
-    );
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
+    crate::cli::with_pane_terminal(|terminal| {
+        run_loop(
+            terminal,
+            &base_branch,
+            &DiffPaneContext {
+                root: &root,
+                db_path,
+                task_id,
+            },
+            &RealProcessRunner::default(),
+        )
+    })
 }
 
 #[cfg(test)]

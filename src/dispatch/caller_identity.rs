@@ -108,74 +108,11 @@ pub(super) fn mcp_config_flag(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::dispatch::tests::{claude_json_with_dispatch_entry, make_linked_worktree};
+    use crate::dispatch::tests::claude_json_with_dispatch_entry;
     use crate::process::MockProcessRunner;
+    use crate::worktree_admin::tests::make_linked_worktree;
     use serde_json::Value;
     use std::path::Path;
-
-    // -- worktree_admin_dir --
-
-    #[test]
-    fn admin_dir_is_read_from_the_git_pointer_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let (worktree, admin) = make_linked_worktree(dir.path(), "42-fix-bug");
-        assert_eq!(worktree_admin_dir(&worktree), Some(admin));
-    }
-
-    #[test]
-    fn a_relative_git_pointer_resolves_against_the_worktree() {
-        // `git worktree add --relative-paths` (and worktree.useRelativePaths)
-        // writes `gitdir: ../../.git/worktrees/<name>`. Taken literally that
-        // resolves against THIS process's working directory, which is not the
-        // worktree — the config would be written somewhere else entirely, or
-        // not at all.
-        let dir = tempfile::tempdir().unwrap();
-        let (worktree, admin) = make_linked_worktree(dir.path(), "42-fix-bug");
-        std::fs::write(
-            Path::new(&worktree).join(".git"),
-            "gitdir: ../../.git/worktrees/42-fix-bug\n",
-        )
-        .unwrap();
-
-        let resolved = worktree_admin_dir(&worktree).unwrap();
-
-        assert_eq!(
-            resolved.canonicalize().unwrap(),
-            admin.canonicalize().unwrap()
-        );
-    }
-
-    #[test]
-    fn a_main_checkout_has_no_admin_dir() {
-        // `.git` is a directory there, not a pointer file.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
-        assert!(worktree_admin_dir(dir.path().to_str().unwrap()).is_none());
-    }
-
-    #[test]
-    fn a_directory_with_no_git_at_all_has_no_admin_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(worktree_admin_dir(dir.path().to_str().unwrap()).is_none());
-    }
-
-    #[test]
-    fn a_git_file_that_is_not_a_gitdir_pointer_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".git"), "not a pointer\n").unwrap();
-        assert!(worktree_admin_dir(dir.path().to_str().unwrap()).is_none());
-    }
-
-    #[test]
-    fn a_gitdir_pointer_naming_nothing_is_rejected() {
-        // Otherwise the empty path joins to the worktree itself, and the config
-        // lands where `git status` can see it.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".git"), "gitdir:   \n").unwrap();
-        assert!(worktree_admin_dir(dir.path().to_str().unwrap()).is_none());
-    }
-
-    // -- write_agent_mcp_config --
 
     #[test]
     fn the_config_is_written_into_the_worktrees_git_admin_dir() {

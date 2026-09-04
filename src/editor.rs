@@ -8,10 +8,11 @@ pub const EDITOR_FALLBACK: &str = "vi";
 /// Resolve the editor argv from environment *values*: `$VISUAL`, then
 /// `$EDITOR`, then [`EDITOR_FALLBACK`]. Never returns an empty vector.
 ///
-/// One resolver for every surface that launches an editor — the board's pop-out
-/// task/epic editor (`runtime::editor`) and the agent-tree editor pane
-/// (`crate::agent_tree_editor`) — because one `$EDITOR` must not mean two things
-/// in one application (docs/specs/core.allium: `editor_fallback`).
+/// One resolver for every surface that launches an editor — today the board's
+/// pop-out task/epic editor (`runtime::editor`) — because one `$EDITOR` must not
+/// mean two things in one application (docs/specs/core.allium:
+/// `editor_fallback`). The agent-tree companion pane used to be the second
+/// such surface; it shows diffs now and launches no editor at all.
 ///
 /// Takes the values as parameters rather than reading the process environment,
 /// so the resolution order is testable without `std::env::set_var` — which is

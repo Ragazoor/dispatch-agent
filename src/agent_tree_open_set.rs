@@ -104,22 +104,9 @@ pub fn clear_open_set(worktree_path: &str) -> Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::path::Path;
-
-    /// A linked worktree: a `.git` POINTER FILE naming an admin directory that
-    /// exists. Returns the worktree path and its admin directory.
-    fn make_linked_worktree(base: &Path, name: &str) -> (String, PathBuf) {
-        let worktree = base.join("wt").join(name);
-        let admin = base.join("repo").join(".git").join("worktrees").join(name);
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::create_dir_all(&admin).unwrap();
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", admin.display()),
-        )
-        .unwrap();
-        (worktree.to_string_lossy().into_owned(), admin)
-    }
+    // The one on-disk encoding of a linked worktree, shared with every other
+    // test of this placement rule — see its own doc comment.
+    use crate::worktree_admin::tests::make_linked_worktree;
 
     fn set_of(paths: &[&str]) -> BTreeSet<PathBuf> {
         paths.iter().map(PathBuf::from).collect()
