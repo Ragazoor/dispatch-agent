@@ -171,6 +171,13 @@ pub(in crate::tui) fn visible_epic_ids(app: &super::App) -> Vec<i64> {
     ids
 }
 
+/// Ids of the task cards the current view would render, as a set — the twin of
+/// [`visible_epic_ids`] for `tasks_for_current_view`. A set rather than a sorted
+/// list because callers ask about membership, not order.
+pub(in crate::tui) fn visible_task_ids(app: &super::App) -> std::collections::HashSet<TaskId> {
+    app.tasks_for_current_view().iter().map(|t| t.id).collect()
+}
+
 pub(in crate::tui) fn make_todo(id: i64, title: &str) -> crate::models::Todo {
     crate::models::Todo {
         id: crate::models::TodoId(id),

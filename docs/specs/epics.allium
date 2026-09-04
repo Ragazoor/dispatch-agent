@@ -176,11 +176,12 @@ rule CreateEpic {
         -- sub-epics appear only inside their parent's epic view.
         --
         -- This grouping is bypassed when the board is in flattened mode
-        -- (see core/FlattenedView): epic cards are hidden and every
-        -- descendant task in Running, Review, or Done surfaces directly in
-        -- its status column. The Backlog column is excluded from flattening:
-        -- epic cards remain visible there so the backlog stays navigable at
-        -- the epic level.
+        -- (see core/FlattenedView), but only in the Running and Review
+        -- columns: there epic cards are hidden and every descendant task
+        -- surfaces directly in its status column. Backlog and Done are
+        -- excluded from flattening — they are the columns read at the epic
+        -- level, so epic cards remain visible in both and epic-owned tasks
+        -- stay inside them.
 }
 
 -- There is no batch wrap-up for an epic. Each subtask's agent wraps its

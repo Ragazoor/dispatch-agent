@@ -682,12 +682,12 @@ fn column_layout_build_builds_no_search_index_without_a_query() {
 fn flattened_columns_build_no_search_index() {
     // Flattened columns show tasks only and never ask an epic-visibility
     // question, so the pass must stay unbuilt even with a query live. Backlog
-    // is exempt from flattening, so it is the one column that still asks.
+    // and Done are exempt from flattening, so they still ask.
     let mut app = multi_column_searchable_board();
     app.board.flattened = true;
     let stats = app.compute_epic_stats();
     let builds = count_index_builds(|| {
-        for status in [TaskStatus::Running, TaskStatus::Review, TaskStatus::Done] {
+        for status in [TaskStatus::Running, TaskStatus::Review] {
             let _ = app.column_items_for_status_with_stats(status, Some(&stats));
         }
     });

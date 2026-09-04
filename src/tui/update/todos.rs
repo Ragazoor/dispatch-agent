@@ -384,16 +384,16 @@ impl App {
         &mut self,
         link: crate::models::TodoLink,
     ) -> Vec<Command> {
-        // In non-flattened mode, tasks belonging to an epic are hidden from the
-        // main board view. Detect this so we can enter the epic after closing.
-        let epic_id = (!self.board.flattened)
-            .then(|| match link {
-                crate::models::TodoLink::Task(task_id) => {
-                    self.find_task(task_id).and_then(|t| t.epic_id)
-                }
-                _ => None,
-            })
-            .flatten();
+        // A task the board folds inside its epic card can only be reached by
+        // entering that epic. Which tasks those are is the board view's own
+        // rule, so ask it rather than re-deriving it from the flatten flag.
+        let epic_id = match link {
+            crate::models::TodoLink::Task(task_id) => self
+                .find_task(task_id)
+                .filter(|t| !self.shown_on_main_board(t))
+                .and_then(|t| t.epic_id),
+            _ => None,
+        };
 
         let anchor = match link {
             crate::models::TodoLink::Task(id) => ColumnAnchor::Task(id),

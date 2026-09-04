@@ -2187,12 +2187,17 @@ value BoardNeutralRamp {
 -- The task board has two rendering modes: the default hierarchical mode
 -- and a flattened mode that surfaces every descendant task of the
 -- current scope directly into its visual column, bypassing the
--- epic/sub-epic grouping.
+-- epic/sub-epic grouping. Flattening does not reach every column: the
+-- Backlog and Done columns are exempt and always render hierarchically
+-- (see Rendering).
 --
 -- Intent: when work is spread across nested epics, users often need to
 -- see at a glance which tasks are running, blocked, or awaiting review
 -- without drilling into each epic individually. The flattened mode
--- answers that need without changing any task data.
+-- answers that need without changing any task data. The exemption is the
+-- other half of the same intent: Backlog and Done are read at the epic
+-- level rather than task by task, so flattening them would cost more
+-- than it gives.
 --
 -- Scope: determined by the current view.
 --   - Main board view: scope is every non-archived task that passes the
@@ -2201,15 +2206,31 @@ value BoardNeutralRamp {
 --     (epic_id, then epic.parent, recursively) roots at the current
 --     epic, plus any task directly under it. The repo filter still
 --     applies.
+--   - Either way the scope is narrowed again per column: only a column
+--     that is being flattened shows the whole subtree. An unflattened
+--     column shows what hierarchical mode would show there — on the main
+--     board, tasks with no epic; in an epic view, the current epic's own
+--     direct tasks. See Rendering.
 --
 -- Rendering:
---   - Task cards appear in their normal visual column, determined by
---     (task.status, task.sub_status), exactly as in hierarchical mode.
---   - Epic cards are not rendered in flattened mode — neither root
---     epics on the board nor sub-epics inside an epic view.
---   - Task cards belonging to an epic show the epic's id (rendered
---     in a distinguishing colour) appended to the card's indicator
---     line, so epic membership remains visible on the card.
+--   - Flattening is per column, not board-wide. It applies to the Running
+--     and Review columns only. The Backlog and Done columns are never
+--     flattened: each renders exactly as it does in hierarchical mode,
+--     with epic cards visible and no descendant surfaced out of its epic.
+--     On the main board that leaves only standalone tasks (no epic) as
+--     task cards there; in an epic view it leaves the current epic's own
+--     direct tasks, with deeper descendants still inside their sub-epic's
+--     card. Those two are the columns that are read at the epic level —
+--     the backlog stays navigable at the epic level, and completed work
+--     stays readable at the epic level — which is why they keep their
+--     epic cards while Running and Review give theirs up.
+--   - In a flattened column, task cards appear in their normal visual
+--     column, determined by (task.status, task.sub_status), exactly as in
+--     hierarchical mode, and no epic card is rendered there — neither
+--     root epics on the board nor sub-epics inside an epic view.
+--   - Epic membership is carried by the epic-header rule below, not by
+--     the task card itself: a flattened task card renders exactly as it
+--     does in hierarchical mode, with no epic badge of its own.
 --   - The decorative epic-header rule that precedes each epic's task group
 --     shows that epic's full ancestor breadcrumb: the root ancestor first and
 --     the epic's own title last, segments joined with " › ". The breadcrumb is
@@ -2217,6 +2238,13 @@ value BoardNeutralRamp {
 --     truncated to keep a visible prefix, sharing the available width fairly
 --     across segments. A root epic (no ancestors) shows just its own title,
 --     unchanged from prior behaviour.
+--   - Within each substatus group, epic-owned tasks come first and tasks
+--     with no epic come last. A second decorative rule — visually distinct
+--     from the epic-header one — separates the two, marking where the
+--     epic groups end. It is drawn only at that transition, so a group of
+--     all-epic or all-orphan tasks shows none. Like the epic header it is
+--     decoration: neither rule is selectable and neither counts towards
+--     the column's navigable items.
 --
 -- State model:
 --   - Flattened is a single board-level boolean, toggled by the user.
@@ -2228,23 +2256,52 @@ value BoardNeutralRamp {
 --   - Task-card actions (dispatch, go-into-task, expand-description)
 --     behave identically in both modes. A flattened task card always
 --     acts on the task itself, never on its ancestor epic.
---   - To navigate into an epic, the user first turns flattened mode
---     off; epic cards then become visible and selectable.
+--   - Epic cards stay visible and selectable in the two unflattened
+--     columns, so an epic sitting in Backlog or Done can be entered
+--     without leaving flattened mode. To navigate into an epic whose own
+--     card falls in a flattened column, the user first turns flattened
+--     mode off; every epic card then becomes visible and selectable.
 
 value FlattenedView {
     active: Boolean
 
-    -- In flattened mode, the board renders only tasks in scope, never
-    -- epics. In hierarchical mode (active = false), rendering follows
-    -- the default rules (root epics on the board, sub-epics and direct
-    -- tasks inside each epic view).
-    renders_epics: not active
+    -- The columns flattening never reaches, named by their parent status.
+    -- Both are read at the epic level — the backlog stays navigable at
+    -- the epic level, completed work stays readable at the epic level —
+    -- so both keep their epic cards and leave every descendant inside the
+    -- epic it belongs to (see directly_under below for the one level a
+    -- column shows without flattening).
+    unflattened_statuses: Set<TaskStatus> = { backlog, done }
 
-    -- A task is in scope for the current view when flattened is active.
-    in_scope(task, view):
+    -- Flattening is decided per column, not once for the board.
+    flattens(column): active and column.parent_status not in unflattened_statuses
+
+    -- A column renders epic cards unless it is being flattened. In
+    -- hierarchical mode (active = false) that is every column, and
+    -- rendering follows the default rules (root epics on the board,
+    -- sub-epics and direct tasks inside each epic view).
+    renders_epics(column): not flattens(column)
+
+    -- What hierarchical mode shows in a column: on the main board, tasks
+    -- with no epic; in an epic view, the current epic's own direct tasks.
+    -- Deeper descendants stay inside their sub-epic's card.
+    directly_under(task, view):
+        (view.is_board and task.epic = null)
+        or (not view.is_board and task.epic = view.current_epic)
+
+    -- A task is in scope for the given column when flattened is active.
+    -- A flattened column admits the whole in-scope subtree; an unflattened
+    -- column admits only what hierarchical mode would show there.
+    --
+    -- This is the flatten decision alone, not the whole visibility test.
+    -- The board-wide filters compose on top of it and are specified in
+    -- their own sections: only_active_filter and board_search_filter.
+    -- Both apply identically in either mode.
+    in_scope(task, view, column):
         not task.archived
         and task.repo_path in view.active_repo_filter
         and (view.is_board or task.is_descendant_of(view.current_epic))
+        and (flattens(column) or directly_under(task, view))
 }
 
 -- == Board Vertical Layout ==

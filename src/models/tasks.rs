@@ -51,7 +51,35 @@ impl TaskStatus {
     pub const MCP_UPDATABLE: &'static [TaskStatus] =
         &[TaskStatus::Backlog, TaskStatus::Running, TaskStatus::Review];
 
+    /// The board columns that flattened mode never reaches. Kept as its own
+    /// const, in the same polarity as `core.allium`'s
+    /// `FlattenedView.unflattened_statuses`, so the two cannot drift: a new
+    /// column added to the enum flattens by default in both.
+    ///
+    /// Backlog and Done are the columns read at the epic level — the backlog
+    /// stays navigable at the epic level, and completed work stays readable
+    /// there — so both keep their epic cards while Running and Review give
+    /// theirs up. `Archived` is not a board column and is absent by the same
+    /// reasoning as [`Self::ALL`].
+    pub const UNFLATTENED: &'static [TaskStatus] = &[TaskStatus::Backlog, TaskStatus::Done];
+
     pub const COLUMN_COUNT: usize = Self::ALL.len();
+
+    /// Whether flattened mode leaves this column alone. See [`Self::UNFLATTENED`].
+    pub fn is_unflattened(self) -> bool {
+        Self::UNFLATTENED.contains(&self)
+    }
+
+    /// Whether this column is split into substatus sections, so its cards are
+    /// grouped under section headers rather than listed flat.
+    ///
+    /// A separate question from [`Self::is_unflattened`] even though the two
+    /// name the same pair of columns today: one is about epic grouping, the
+    /// other about sub-status grouping, and they answer differently the moment
+    /// either set changes.
+    pub fn has_substatus_sections(self) -> bool {
+        matches!(self, TaskStatus::Running | TaskStatus::Review)
+    }
 
     /// Advance to the next status (wraps at Done -> Done).
     pub fn next(self) -> Self {
@@ -2404,5 +2432,37 @@ mod tests {
             later < earlier,
             "a more recent completion must sort before ({later}) an older one ({earlier}) under ascending sort_by_key"
         );
+    }
+
+    /// Pins the exempt set against `core.allium`'s
+    /// `FlattenedView.unflattened_statuses`. Changing one without the other is
+    /// a behaviour change, so make it fail here rather than drift silently.
+    #[test]
+    fn unflattened_is_backlog_and_done() {
+        assert_eq!(
+            TaskStatus::UNFLATTENED,
+            &[TaskStatus::Backlog, TaskStatus::Done]
+        );
+        for status in TaskStatus::ALL_INCLUDING_ARCHIVED {
+            assert_eq!(
+                status.is_unflattened(),
+                matches!(status, TaskStatus::Backlog | TaskStatus::Done),
+                "{status:?}"
+            );
+        }
+    }
+
+    /// The sectioned set and the exempt set name the same pair of columns
+    /// today, but answer different questions — this pins them apart so a
+    /// change to one is not quietly assumed to change the other.
+    #[test]
+    fn substatus_sections_are_running_and_review() {
+        for status in TaskStatus::ALL_INCLUDING_ARCHIVED {
+            assert_eq!(
+                status.has_substatus_sections(),
+                matches!(status, TaskStatus::Running | TaskStatus::Review),
+                "{status:?}"
+            );
+        }
     }
 }

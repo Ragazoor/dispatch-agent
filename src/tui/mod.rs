@@ -1037,10 +1037,20 @@ impl App {
         !self.search.query.is_empty()
     }
 
-    /// Whether flattened mode applies to `status`. Backlog is excluded from
-    /// flattening so that epic cards remain visible in the backlog column.
+    /// Whether flattened mode applies to `status`. The exempt columns live on
+    /// [`TaskStatus::UNFLATTENED`], so this is only the mode half of the
+    /// question; nothing here restates which columns those are.
     fn is_flattened_for_status(&self, status: TaskStatus) -> bool {
-        self.board.flattened && status != TaskStatus::Backlog
+        self.board.flattened && !status.is_unflattened()
+    }
+
+    /// Whether the main board shows `task` as a card of its own, rather than
+    /// folded inside its epic's card. The one owner of that rule: the board
+    /// view filter admits exactly these, and callers that need to reach a
+    /// hidden task (by entering its epic) negate it.
+    fn shown_on_main_board(&self, task: &Task) -> bool {
+        task.status != TaskStatus::Archived
+            && (self.is_flattened_for_status(task.status) || task.epic_id.is_none())
     }
 
     /// Return tasks visible in the current view.
@@ -1058,48 +1068,39 @@ impl App {
                 .board
                 .tasks
                 .iter()
-                .filter(|t| {
-                    t.status != TaskStatus::Archived
-                        && (self.is_flattened_for_status(t.status) || t.epic_id.is_none())
-                })
+                .filter(|t| self.shown_on_main_board(t))
                 .filter(repo_match)
                 .filter(active_match)
                 .filter(search_match)
                 .collect(),
             BoardViewMode::Epic { epic_id, .. } => {
                 let current = epic_id;
-                if self.board.flattened {
-                    let subtree = crate::models::descendant_task_ids(
+                // Only a flattened column reaches past the epic's own tasks, so
+                // the subtree is worth walking only when some column will use
+                // it. With flattening off, every column takes the else arm and
+                // this stays `None`.
+                let subtree = self.board.flattened.then(|| {
+                    crate::models::descendant_task_ids(
                         current,
                         &self.board.epics,
                         &self.board.tasks,
-                    );
-                    self.board
-                        .tasks
-                        .iter()
-                        .filter(|t| {
-                            t.status != TaskStatus::Archived
-                                && if self.is_flattened_for_status(t.status) {
-                                    subtree.contains(&t.id)
-                                } else {
-                                    // Backlog excluded from flattening: only direct children
-                                    t.epic_id == Some(current)
-                                }
-                        })
-                        .filter(repo_match)
-                        .filter(active_match)
-                        .filter(search_match)
-                        .collect()
-                } else {
-                    self.board
-                        .tasks
-                        .iter()
-                        .filter(|t| t.epic_id == Some(current) && t.status != TaskStatus::Archived)
-                        .filter(repo_match)
-                        .filter(active_match)
-                        .filter(search_match)
-                        .collect()
-                }
+                    )
+                });
+                self.board
+                    .tasks
+                    .iter()
+                    .filter(|t| {
+                        t.status != TaskStatus::Archived
+                            && if self.is_flattened_for_status(t.status) {
+                                subtree.as_ref().is_some_and(|s| s.contains(&t.id))
+                            } else {
+                                t.epic_id == Some(current)
+                            }
+                    })
+                    .filter(repo_match)
+                    .filter(active_match)
+                    .filter(search_match)
+                    .collect()
             }
         }
     }
@@ -1356,8 +1357,9 @@ impl App {
         if self.is_flattened_for_status(status) {
             let epic_lookup = crate::models::epic_id_lookup(&self.board.epics);
 
-            // SubstatusLabel items only make sense in Running/Review columns.
-            let show_substatus_labels = matches!(status, TaskStatus::Running | TaskStatus::Review);
+            // SubstatusLabel items only make sense where the column has
+            // substatus sections at all.
+            let show_substatus_labels = status.has_substatus_sections();
 
             // Sort: (substatus_priority, epic_sort_key, task_sort_key, task_id).
             // Orphan tasks (epic not in board) sort last within each substatus group.
@@ -1507,9 +1509,6 @@ impl App {
     /// handles the split-pane layout; the status-based path handles the flat-board layout.
     pub fn column_items_for_visual_column(&self, vcol_idx: usize) -> Vec<ColumnItem<'_>> {
         let vcol = &VisualColumn::ALL[vcol_idx];
-        // One visual column per call, so the pass is built here rather than
-        // threaded in; there is no loop over columns to hoist it out of.
-        let pass = self.epic_search_pass();
         let tasks: Vec<&Task> = self
             .tasks_for_current_view()
             .into_iter()
@@ -1524,30 +1523,39 @@ impl App {
         let mut running_epic_priority: std::collections::HashMap<EpicId, u8> =
             std::collections::HashMap::new();
 
-        for epic in self.visible_epics_for_effective_view(&pass) {
-            let epic_parent = epic.status;
-            if epic_parent != vcol.parent_status {
-                continue;
-            }
-            if epic_parent == TaskStatus::Running {
-                let subtasks: Vec<&Task> = self
-                    .board
-                    .tasks
-                    .iter()
-                    .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
-                    .collect();
-                let substatus = epic_substatus(epic, &subtasks);
-                running_epic_priority.insert(epic.id, substatus.column_priority());
-                let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) {
-                    2
-                } else {
-                    1
-                };
-                if vcol_idx == target_col {
+        // Same per-column rule as the status-based builder: a flattened column
+        // renders no epic card, so it never walks the epic list or builds the
+        // search index behind it. Backlog and Done are never flattened, so they
+        // keep theirs.
+        if !self.is_flattened_for_status(vcol.parent_status) {
+            // One visual column per call, so the pass is built here rather than
+            // threaded in; there is no loop over columns to hoist it out of.
+            let pass = self.epic_search_pass();
+            for epic in self.visible_epics_for_effective_view(&pass) {
+                let epic_parent = epic.status;
+                if epic_parent != vcol.parent_status {
+                    continue;
+                }
+                if epic_parent == TaskStatus::Running {
+                    let subtasks: Vec<&Task> = self
+                        .board
+                        .tasks
+                        .iter()
+                        .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
+                        .collect();
+                    let substatus = epic_substatus(epic, &subtasks);
+                    running_epic_priority.insert(epic.id, substatus.column_priority());
+                    let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) {
+                        2
+                    } else {
+                        1
+                    };
+                    if vcol_idx == target_col {
+                        items.push(ColumnItem::Epic(epic));
+                    }
+                } else if vcol_idx == VisualColumn::parent_group_start(epic_parent) {
                     items.push(ColumnItem::Epic(epic));
                 }
-            } else if vcol_idx == VisualColumn::parent_group_start(epic_parent) {
-                items.push(ColumnItem::Epic(epic));
             }
         }
 

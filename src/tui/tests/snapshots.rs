@@ -599,6 +599,26 @@ fn flat_view_backlog_shows_epic_card() {
     insta::assert_snapshot!(rendered);
 }
 
+/// Snapshot: done column in flat mode still shows epic cards (done excluded from flattening).
+#[test]
+fn flat_view_done_shows_epic_card() {
+    use crate::models::EpicId;
+    use crate::tui::tests::make_epic_with_title;
+
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic_with_title(10, "My Feature");
+    epic.status = TaskStatus::Done;
+    app.board.epics = vec![epic];
+    let mut t1 = make_task(1, TaskStatus::Done);
+    t1.epic_id = Some(EpicId(10));
+    app.board.tasks = vec![t1];
+    app.board.flattened = true;
+    app.selection_mut().set_column(4); // Done column
+
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
 #[test]
 fn flat_view_substatus_indicators_above_epic_headers() {
     use crate::models::{EpicId, SubStatus};

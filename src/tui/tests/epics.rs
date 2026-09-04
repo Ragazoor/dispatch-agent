@@ -210,8 +210,7 @@ fn flattened_board_shows_running_subtasks_but_not_backlog() {
     app.board.epics = vec![make_epic(10)];
     app.board.flattened = true;
 
-    let visible = app.tasks_for_current_view();
-    let ids: std::collections::HashSet<_> = visible.iter().map(|t| t.id).collect();
+    let ids = visible_task_ids(&app);
     // Standalone backlog task is always visible
     assert!(ids.contains(&TaskId(1)));
     // Running subtask surfaces in flat mode
@@ -258,15 +257,15 @@ fn flattened_board_is_recursive_through_nested_epics() {
 }
 
 #[test]
-fn flattened_board_hides_epic_cards_in_active_columns_but_not_backlog() {
+fn flattened_board_hides_epic_cards_in_active_columns_only() {
     let mut app = App::new(vec![]);
     let mut child = make_epic(20);
     child.parent_epic_id = Some(EpicId(10));
     app.board.epics = vec![make_epic(10), child];
     app.board.flattened = true;
 
-    // Running/Review/Done columns: epic cards are hidden (tasks surface via EpicHeader)
-    for status in [TaskStatus::Running, TaskStatus::Review, TaskStatus::Done] {
+    // Running/Review columns: epic cards are hidden (tasks surface via EpicHeader)
+    for status in [TaskStatus::Running, TaskStatus::Review] {
         let items = app.column_items_for_status(status);
         assert!(
             items.iter().all(|i| matches!(
@@ -280,7 +279,9 @@ fn flattened_board_hides_epic_cards_in_active_columns_but_not_backlog() {
         );
     }
 
-    // Backlog column: epic cards remain visible (backlog is excluded from flattening)
+    // Backlog column: epic cards remain visible (backlog is excluded from
+    // flattening). Done is excluded too, but
+    // `flattened_board_shows_epic_cards_in_done` owns that assertion.
     let backlog_items = app.column_items_for_status(TaskStatus::Backlog);
     assert!(
         backlog_items
@@ -307,8 +308,7 @@ fn flattened_epic_view_shows_only_that_subtree() {
         parent: Box::new(ViewMode::Board(BoardSelection::new())),
     };
 
-    let visible = app.tasks_for_current_view();
-    let ids: std::collections::HashSet<_> = visible.iter().map(|t| t.id).collect();
+    let ids = visible_task_ids(&app);
     assert!(ids.contains(&TaskId(1)));
     assert!(!ids.contains(&TaskId(2)));
 }
@@ -3569,4 +3569,133 @@ fn move_task_picker_has_prebuilt_tree_items_on_open() {
         !picker.items.is_empty(),
         "move-task picker items must be prebuilt when picker opens"
     );
+}
+
+#[test]
+fn flattened_board_hides_done_subtasks() {
+    // Done is excluded from flattening on the same terms as Backlog: an
+    // epic's Done subtask stays inside its epic card rather than surfacing.
+    let mut app = App::new(vec![]);
+    let standalone = make_task(1, TaskStatus::Done);
+    let mut done_subtask = make_task(2, TaskStatus::Done);
+    done_subtask.epic_id = Some(EpicId(10));
+    let mut running_subtask = make_task(3, TaskStatus::Running);
+    running_subtask.epic_id = Some(EpicId(10));
+    app.board.tasks = vec![standalone, done_subtask, running_subtask];
+    app.board.epics = vec![make_epic(10)];
+    app.board.flattened = true;
+
+    let ids = visible_task_ids(&app);
+    assert!(
+        ids.contains(&TaskId(1)),
+        "standalone done task stays visible"
+    );
+    assert!(
+        ids.contains(&TaskId(3)),
+        "running subtask surfaces in flat mode"
+    );
+    assert!(
+        !ids.contains(&TaskId(2)),
+        "done subtask should NOT surface — done is excluded from flattening"
+    );
+}
+
+#[test]
+fn flattened_board_shows_epic_cards_in_done() {
+    let mut app = App::new(vec![]);
+    let mut epic = make_epic(10);
+    epic.status = TaskStatus::Done;
+    app.board.epics = vec![epic];
+    let mut done_subtask = make_task(1, TaskStatus::Done);
+    done_subtask.epic_id = Some(EpicId(10));
+    app.board.tasks = vec![done_subtask];
+    app.board.flattened = true;
+
+    let items = app.column_items_for_status(TaskStatus::Done);
+    assert!(
+        items
+            .iter()
+            .any(|i| matches!(i, ColumnItem::Epic(e) if e.id == EpicId(10))),
+        "done column should still show epic cards in flat mode"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|i| matches!(i, ColumnItem::Task(t) if t.id == TaskId(1))),
+        "done subtask should NOT surface in flat mode"
+    );
+}
+
+#[test]
+fn flattened_epic_view_done_shows_only_direct_children() {
+    // In an epic view, the un-flattened Done column shows the epic's own
+    // direct tasks, not the whole subtree — exactly as Backlog does.
+    let mut app = App::new(vec![]);
+    let mut child_epic = make_epic(20);
+    child_epic.parent_epic_id = Some(EpicId(10));
+    app.board.epics = vec![make_epic(10), child_epic];
+
+    let mut direct = make_task(1, TaskStatus::Done);
+    direct.epic_id = Some(EpicId(10));
+    let mut nested = make_task(2, TaskStatus::Done);
+    nested.epic_id = Some(EpicId(20));
+    let mut nested_running = make_task(3, TaskStatus::Running);
+    nested_running.epic_id = Some(EpicId(20));
+    app.board.tasks = vec![direct, nested, nested_running];
+    app.board.flattened = true;
+    app.handle_enter_epic(EpicId(10));
+
+    let ids = visible_task_ids(&app);
+    assert!(ids.contains(&TaskId(1)), "direct done child stays visible");
+    assert!(
+        !ids.contains(&TaskId(2)),
+        "nested done task should NOT surface — done is excluded from flattening"
+    );
+    assert!(
+        ids.contains(&TaskId(3)),
+        "nested running task still surfaces in flat mode"
+    );
+}
+
+#[test]
+fn flattened_visual_column_hides_epic_cards_in_active_columns() {
+    // The split-pane column builder must honour the same per-column
+    // flattening rule as the status-based one: no Epic card in a flattened
+    // visual column, epic cards kept in Backlog and Done.
+    use crate::models::VisualColumn;
+
+    let mut app = App::new(vec![]);
+    let mut running = make_epic(10);
+    running.status = TaskStatus::Running;
+    let mut finished = make_epic(20);
+    finished.status = TaskStatus::Done;
+    app.board.epics = vec![running, finished, make_epic(30)];
+    app.board.flattened = true;
+
+    // Running and Review give their epic cards up, in every one of their
+    // visual columns; Backlog and Done keep theirs. Named literally rather
+    // than re-derived, so a change to the exempt set fails this test.
+    for (idx, vcol) in VisualColumn::ALL.iter().enumerate() {
+        let has_epic = app
+            .column_items_for_visual_column(idx)
+            .iter()
+            .any(|i| matches!(i, ColumnItem::Epic(_)));
+        if matches!(vcol.parent_status, TaskStatus::Running | TaskStatus::Review) {
+            assert!(
+                !has_epic,
+                "{:?} visual column {idx} should hide epic cards in flat mode",
+                vcol.parent_status
+            );
+        }
+    }
+
+    for status in [TaskStatus::Backlog, TaskStatus::Done] {
+        let idx = VisualColumn::parent_group_start(status);
+        assert!(
+            app.column_items_for_visual_column(idx)
+                .iter()
+                .any(|i| matches!(i, ColumnItem::Epic(_))),
+            "{status:?} visual column {idx} should still show epic cards in flat mode"
+        );
+    }
 }

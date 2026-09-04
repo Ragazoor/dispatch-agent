@@ -107,10 +107,11 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
     let col_idx = nav_col - 1;
     let is_focused = app.selected_column() == nav_col;
     let color = column_color(status);
-    // In flat view the data layer pre-builds SubstatusLabel items; the renderer
-    // must not also inject headers or they'd appear twice.
-    let show_headers =
-        !app.board.flattened && matches!(status, TaskStatus::Running | TaskStatus::Review);
+    // In a flattened column the data layer pre-builds SubstatusLabel items; the
+    // renderer must not also inject headers or they'd appear twice. Both halves
+    // are named rather than spelled out, so neither the flattened set nor the
+    // sectioned set is restated here.
+    let show_headers = !app.is_flattened_for_status(status) && status.has_substatus_sections();
     let selected_row = app.selected_row()[col_idx];
     let mut list_items: Vec<ListItem<'static>> = Vec::new();
     let mut item_heights: Vec<usize> = Vec::new();

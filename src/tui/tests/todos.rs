@@ -1048,3 +1048,37 @@ fn enter_on_unlinked_todo_is_noop() {
         "view mode should remain Todos when Enter is pressed on an unlinked todo"
     );
 }
+
+/// Jumping to a linked task must enter the task's epic whenever the board
+/// would not show that task at the top level. Flattened mode is not enough
+/// on its own: Backlog and Done are excluded from flattening, so an epic's
+/// task in either column is still only reachable inside the epic.
+#[test]
+fn jump_to_linked_enters_epic_for_unflattened_columns_even_when_flattened() {
+    use crate::models::{EpicId, TaskStatus, TodoLink};
+    use crate::tui::tests::{make_epic, make_task};
+
+    for (status, expect_epic_view) in [
+        (TaskStatus::Backlog, true),
+        (TaskStatus::Done, true),
+        (TaskStatus::Running, false),
+        (TaskStatus::Review, false),
+    ] {
+        let mut app = App::new(vec![]);
+        app.board.epics = vec![make_epic(10)];
+        let mut task = make_task(1, status);
+        task.epic_id = Some(EpicId(10));
+        app.board.tasks = vec![task];
+        app.board.flattened = true;
+
+        app.update(Message::Todo(TodoMessage::JumpToLinked(TodoLink::Task(
+            TaskId(1),
+        ))));
+
+        let in_epic_view = matches!(app.board.view_mode, ViewMode::Epic { .. });
+        assert_eq!(
+            in_epic_view, expect_epic_view,
+            "{status:?}: expected epic view = {expect_epic_view}"
+        );
+    }
+}

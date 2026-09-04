@@ -37,7 +37,7 @@
 | `/` | Search the board — live bar; a card matches when the query fuzzy-matches its title **or** is a digit prefix of its id (`38` → `#38`, `#380`, `#3837`; a leading `#` is optional). Epic cards match on their own title/id, or when a descendant the board would still show matches. `Enter` keeps the query (shown as a `[/query]` badge), `Esc` in the bar restores the previous query, `Esc` on the board clears it |
 | `f` | Filter by repo path |
 | `A` | Toggle filter: show only tasks with an active tmux session |
-| `F` | Toggle the flat view — show every task as a plain card instead of grouping subtasks under their epic |
+| `F` | Toggle the flat view — in the Running and Review columns, show every task as a plain card instead of grouping subtasks under their epic. Backlog and Done are never flattened: both keep their epic cards |
 | `N` | Toggle notification panel |
 | `p` | Open the selected task's URL — its pull request, once one is set — in a browser. Reports `No URL set` when the task has none |
 | `P` | Open the personal TODO overlay |
