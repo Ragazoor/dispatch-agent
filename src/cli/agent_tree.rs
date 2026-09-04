@@ -44,7 +44,7 @@ use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
 /// Redraw cadence — see `docs/specs/agent-tree.allium`'s
 /// `config.agent_tree_refresh_interval`. Doubles as the crossterm event
 /// poll timeout, so a key press and a plain timer tick share one wait.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How long ONE git command may run before it is killed and treated as a
 /// failure — `config.agent_tree_git_timeout` in the spec.
@@ -61,7 +61,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// commonest cause of a slow query. The three `merge-base` probes walk refs and
 /// objects only and take no lock, so the practical ceiling is unchanged by the
 /// baseline resolution.
-const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A one-line failure notice, tagged with which of the two writers set it.
 /// Rendered in the pane's bottom border, and while one is set the whole border
@@ -312,7 +312,11 @@ fn is_ancestor(
 /// the one returned — that is the name the user put on the task, so it is the
 /// one they can act on. A ranking probe that could not answer is a different
 /// thing and fails the whole query; see [`is_ancestor`].
-fn fork_point(root: &str, base_branch: &str, runner: &dyn ProcessRunner) -> Result<String> {
+pub(crate) fn fork_point(
+    root: &str,
+    base_branch: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<String> {
     let local = merge_base(root, base_branch, runner);
     let remote = merge_base(root, &crate::git::origin_ref(base_branch), runner);
 
@@ -437,7 +441,7 @@ pub fn git_changes(
 /// buffer, which would eat a leading space off the first `-z` path; these two
 /// commands emit NUL-delimited records where every byte between delimiters
 /// belongs to the filename.
-fn run_git(runner: &dyn ProcessRunner, args: &[&str]) -> Result<String> {
+pub(crate) fn run_git(runner: &dyn ProcessRunner, args: &[&str]) -> Result<String> {
     let output = runner
         .run_with_timeout("git", args, GIT_TIMEOUT)
         .context("could not run git")?;

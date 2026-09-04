@@ -151,6 +151,18 @@ enum Commands {
         /// Task ID whose worktree to render
         task_id: i64,
     },
+    /// Render the diffs of whatever that task's agent-tree pane currently has
+    /// open (see docs/specs/agent-tree.allium's AgentTreeDiffPane surface).
+    /// Split beneath the tree by the tree itself; a separate process for the
+    /// same reason the tree is one, so tmux moves the cursor between them.
+    ///
+    /// Takes the task id rather than a worktree path so the two panes cannot
+    /// disagree about which worktree they are looking at, and so both resolve
+    /// the baseline from the same base branch.
+    AgentDiff {
+        /// Task ID whose open diffs to render
+        task_id: i64,
+    },
     /// statusLine decorator for Claude Code: record the subscription
     /// rate-limit windows from the hook payload on stdin, then run the
     /// user's previous statusLine command and print its output verbatim.
@@ -489,6 +501,14 @@ async fn cmd_agent_tree(db: &std::path::Path, task_id: i64) -> Result<()> {
     let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
     let _ = init_app_log_subscriber(data_dir);
     dispatch_tui::cli::agent_tree::run(db, task_id).await
+}
+
+/// The diff pane beneath the tree. Same alternate-screen constraint as
+/// [`cmd_agent_tree`], so the same best-effort log redirection.
+async fn cmd_agent_diff(db: &std::path::Path, task_id: i64) -> Result<()> {
+    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
+    let _ = init_app_log_subscriber(data_dir);
+    dispatch_tui::cli::agent_diff::run(db, task_id).await
 }
 
 /// Initialise a `tracing_subscriber` writing to **stderr**, for `verify-feed`.
@@ -881,6 +901,7 @@ async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
             cmd_hook_peer_message(db, id, target, body).await?
         }
         Commands::AgentTree { task_id } => cmd_agent_tree(db, task_id).await?,
+        Commands::AgentDiff { task_id } => cmd_agent_diff(db, task_id).await?,
         Commands::PrGate { id } => cmd_pr_gate(db, id).await?,
         Commands::Setup { port, yes } => {
             dispatch_tui::setup::run_setup(port, yes, db).await?;
