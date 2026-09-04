@@ -1813,6 +1813,36 @@ surface StatusLineDecorator {
         -- derived from anything here — the lookup itself is the hazard, so
         -- being handed the directory is the whole of the fix.
 
+    @guarantee AnUnavailableHomeDirectoryIsAFailureNotAPath
+        -- Every operator-owned location startup is handed is found under the
+        -- home directory, and each is resolved from one reading of it. When
+        -- that reading yields nothing usable, resolution reports that and
+        -- startup stops. It never yields a location anyway.
+        --
+        -- Two locations sit beside each other there — the configuration
+        -- directory, and the trust store next to it — and they are resolved
+        -- the same way, because they are the same kind of thing. A resolution
+        -- that failed for one and quietly succeeded for the other would leave
+        -- which of the two a run consulted deciding whether the operator was
+        -- told anything at all.
+        --
+        -- The hazard is specific to the answer being a path. An absent home
+        -- directory composes into a perfectly well-formed location — one at
+        -- the root of the filesystem, or one relative to whatever directory
+        -- the process happens to be running in — and everything downstream
+        -- then treats it as the operator's own. A trust store read there holds
+        -- no record of any repository, so every repository reads as untrusted;
+        -- the operator sees dispatch declining to launch, with nothing naming
+        -- the home directory anywhere. Granting trust would write the file
+        -- into existence, at that location, and the next read would find it.
+        -- Nothing in that sequence is an error, which is why the resolution
+        -- has to be the thing that refuses.
+        --
+        -- An empty home directory counts as unavailable, not as the root: a
+        -- shell spells "unset" both by omitting the variable and by setting it
+        -- to nothing, and only one of those spellings failing is the same
+        -- split again, one level down.
+
     @guarantee SpawnSitesAndStartupNameTheSameConfigurationDirectory
         -- Dispatch owns two things inside the operator's Claude Code
         -- configuration directory: the decorator's settings file, and the
@@ -1902,6 +1932,31 @@ surface StatusLineDecorator {
         -- src/main.rs::cmd_tui needs no test: `StartupPaths`' fields are
         -- private to src/runtime/mod.rs, so `resolve` is the only way to
         -- obtain one.
+        --
+        -- AnUnavailableHomeDirectoryIsAFailureNotAPath is
+        -- src/setup/mod.rs::home_dir, the one reader of `$HOME` behind both
+        -- src/setup/mod.rs::claude_dir and
+        -- src/setup/mod.rs::user_global_config_path. Startup reads it once,
+        -- in `StartupPaths::resolve`, and composes both locations from that
+        -- one reading. The joining half of each is a separate function taking
+        -- the home directory as an argument (`claude_dir_in`,
+        -- `user_global_config_path_in`), so a test can vary it — comparing two
+        -- locations both derived from the real `$HOME` cancels it out of both
+        -- sides and asserts nothing. The same shape as
+        -- src/editor.rs::resolve_editor, and for the same reason:
+        -- `std::env::set_var` is unsafe in edition 2024 and races the test
+        -- harness's threads regardless.
+        --
+        -- The empty-is-unavailable rule reaches past the locations startup is
+        -- handed, because the same spelling composes just as quietly
+        -- elsewhere: src/tmux.rs::tmux_conf_path resolves through the same
+        -- reader, and src/models/paths.rs::expand_tilde and
+        -- src/lib.rs::default_db_path apply the rule to their own fallbacks —
+        -- neither has a Result to report an absence through, so each stays
+        -- put instead. expand_tilde is the one that matters most: it is what
+        -- src/dispatch/trust.rs::project_key keys the trust store on, so
+        -- without it the store's path and its key would disagree about an
+        -- empty home directory.
 }
 
 surface SandboxedAgentExecution {

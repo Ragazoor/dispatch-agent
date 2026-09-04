@@ -7,19 +7,38 @@
 //! stays in the dispatch adapter (`resolve_repo_path`), which is the only
 //! thing here that needs to know what is on disk.
 
-/// Expand a leading `~` or `~/` to the user's home directory.
-/// Returns the path unchanged if it doesn't start with `~` or `$HOME` is unset.
-pub fn expand_tilde(path: &str) -> String {
+/// Expand a leading `~` or `~/` against a home directory *value*.
+///
+/// Returns the path unchanged if it doesn't start with `~`, or if the home
+/// directory is unavailable. An empty value counts as unavailable rather than
+/// as the filesystem root — otherwise `~/repo` becomes `/repo`, a well-formed
+/// path that nothing downstream can tell from a real one, and this expansion
+/// feeds durable state (repo paths recorded in the database, and the v18/v31
+/// migrations that rewrite them). Same rule as `crate::setup::home_dir`; see
+/// docs/specs/dispatch.allium:
+/// `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
+///
+/// Takes the value as a parameter so the unavailable cases are testable:
+/// `std::env::set_var` is `unsafe` in edition 2024 and races the test
+/// harness's threads regardless (see `crate::editor::resolve_editor`).
+pub fn expand_tilde_with_home(path: &str, home: Option<&str>) -> String {
+    let home = home.filter(|home| !home.is_empty());
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return format!("{}/{rest}", home.to_string_lossy());
+        if let Some(home) = home {
+            return format!("{home}/{rest}");
         }
     } else if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return home.to_string_lossy().into_owned();
+        if let Some(home) = home {
+            return home.to_string();
         }
     }
     path.to_string()
+}
+
+/// [`expand_tilde_with_home`] against the real process environment.
+pub fn expand_tilde(path: &str) -> String {
+    let home = std::env::var("HOME").ok();
+    expand_tilde_with_home(path, home.as_deref())
 }
 
 /// Grouping key for anything whose repo cannot be determined.
@@ -189,6 +208,27 @@ mod tests {
     fn expand_tilde_bare() {
         let home = std::env::var("HOME").unwrap();
         assert_eq!(expand_tilde("~"), home);
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
+    ///
+    /// `~` has no meaning without a home directory, so it must stay literal
+    /// rather than expand to the filesystem root. `/repo` is a well-formed
+    /// path that nothing downstream can tell from a real one, and this
+    /// expansion is what `dispatch::trust::project_key` keys the trust store
+    /// on and what the repo-path migrations write back to the database.
+    ///
+    /// The home directory is a parameter, so both spellings of "unavailable"
+    /// are reachable without mutating the process environment.
+    #[test]
+    fn expand_tilde_leaves_the_path_alone_when_there_is_no_home_directory() {
+        for absent in [None, Some("")] {
+            assert_eq!(expand_tilde_with_home("~/repo", absent), "~/repo");
+            assert_eq!(expand_tilde_with_home("~", absent), "~");
+        }
+        assert_eq!(expand_tilde_with_home("~/repo", Some("/h")), "/h/repo");
+        assert_eq!(expand_tilde_with_home("~", Some("/h")), "/h");
     }
 
     #[test]

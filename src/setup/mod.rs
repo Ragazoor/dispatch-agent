@@ -46,17 +46,68 @@ pub use plugins::{install_example_script, remove_plugin, seed_feed_epics};
 /// docs/specs/dispatch.allium:
 /// `SpawnSitesAndStartupNameTheSameConfigurationDirectory`.
 pub(super) fn claude_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("$HOME is not set")?;
-    Ok(PathBuf::from(home).join(crate::claude_paths::claude_dir_name!()))
+    Ok(claude_dir_in(&home_dir()?))
+}
+
+/// [`claude_dir`] under a given home directory.
+pub(super) fn claude_dir_in(home: &std::path::Path) -> PathBuf {
+    home.join(crate::claude_paths::claude_dir_name!())
 }
 
 /// Path to Claude Code's user-global config file (`~/.claude.json`).
 ///
 /// This is where Claude Code reads user-level MCP servers from — *not*
-/// `~/.claude/.mcp.json`, which Claude Code does not consume.
+/// `~/.claude/.mcp.json`, which Claude Code does not consume. It is also
+/// Claude Code's trust store, which is what the trust-gated dispatch arms read
+/// and write through `TuiRuntime::claude_json_path`; the two consumers share
+/// this one resolution rather than each deriving the location. See
+/// docs/specs/dispatch.allium:
+/// `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
 pub(super) fn user_global_config_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("$HOME is not set")?;
-    Ok(PathBuf::from(home).join(".claude.json"))
+    Ok(user_global_config_path_in(&home_dir()?))
+}
+
+/// [`user_global_config_path`] under a given home directory.
+///
+/// Beside the configuration directory rather than inside it. Its name is
+/// stated here and not among the `crate::claude_paths` tokens because nothing
+/// launches a session from it: those tokens exist so the spawn-side `~/`
+/// literals and the writer-side joins cannot drift apart, and this file has no
+/// spawn-side half to agree with.
+pub(super) fn user_global_config_path_in(home: &std::path::Path) -> PathBuf {
+    home.join(".claude.json")
+}
+
+/// The operator's home directory, from a `$HOME` *value* — `None` when the
+/// variable is unset.
+///
+/// An empty value is unavailable, not the root: `export HOME=` is a shell's
+/// other spelling of "unset", and `PathBuf::from("").join(..)` yields a path
+/// relative to the process's working directory, which is not the operator's
+/// anything. Taking the value as a parameter is what makes that testable —
+/// `std::env::set_var` is `unsafe` in edition 2024 and races the test
+/// harness's threads regardless (see `src/editor.rs::resolve_editor`, the same
+/// shape for the same reason).
+pub(super) fn home_dir_from_value(home: Option<&str>) -> Result<PathBuf> {
+    home.filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .context("$HOME is not set")
+}
+
+/// [`home_dir_from_value`] against the real process environment.
+///
+/// The one reader of `$HOME` behind every location `SetupPaths`,
+/// `UninstallPaths` and `runtime::StartupPaths` are built from, so an absent
+/// home directory is reported the same way whichever of them a run asked for.
+/// Nothing downstream can name the cause — see docs/specs/dispatch.allium:
+/// `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
+///
+/// Not every `$HOME` reader in the crate: `crate::models::expand_tilde` and
+/// `crate::default_db_path` resolve their own, and neither fails — they are
+/// string-in/string-out and fall back to a default respectively, so they have
+/// no `Result` to report an absence through.
+pub(super) fn home_dir() -> Result<PathBuf> {
+    home_dir_from_value(std::env::var("HOME").ok().as_deref())
 }
 
 pub(super) fn read_json_file(path: &std::path::Path) -> Result<Option<Value>> {
@@ -1468,6 +1519,50 @@ mod tests {
             statusline::settings_path(&expected),
             "the settings file setup writes and the one startup rewrites must \
              be the same file"
+        );
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `AnUnavailableHomeDirectoryIsAFailureNotAPath`. The failure half.
+    ///
+    /// Both spellings of "no home directory" a shell has must land in the same
+    /// place. Neither may compose into a location: `$HOME` absent would give a
+    /// path at the filesystem root, and `$HOME=` a path relative to whatever
+    /// directory the process is running in — each perfectly well-formed, and
+    /// each silently substituted for the operator's own.
+    #[test]
+    fn an_unavailable_home_directory_is_a_failure_not_a_path() {
+        for absent in [None, Some("")] {
+            let err = home_dir_from_value(absent)
+                .expect_err("an unavailable home directory must not resolve to a path");
+            assert!(
+                format!("{err:#}").contains("$HOME"),
+                "the failure must name the home directory, since nothing \
+                 downstream can: {err:#}"
+            );
+        }
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `AnUnavailableHomeDirectoryIsAFailureNotAPath`. The layout half.
+    ///
+    /// The home directory is a parameter here rather than the process's own.
+    /// Comparing two locations both derived from the real `$HOME` cancels it
+    /// out of each side and asserts nothing about where either one sits.
+    #[test]
+    fn the_trust_store_sits_beside_the_configuration_directory() {
+        let home = std::path::Path::new("/h");
+
+        assert_eq!(
+            user_global_config_path_in(home),
+            std::path::Path::new("/h/.claude.json")
+        );
+        assert_eq!(
+            user_global_config_path_in(home).parent(),
+            claude_dir_in(home).parent(),
+            "the trust store sits beside the configuration directory, not \
+             inside it — which is why its name is not one of the \
+             `claude_paths` tokens"
         );
     }
 }

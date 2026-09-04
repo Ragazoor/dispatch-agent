@@ -32,7 +32,7 @@ pub use finish::{finish_task, FinishContext, FinishError};
 pub(crate) use prompts::RESEARCH_AGENT_INTRO;
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
 pub use split_panes::{join_task_window_into_pane, swap_task_window_into_pane};
-pub(crate) use trust::{claude_json_path, is_trusted_at, trust_at};
+pub(crate) use trust::{is_trusted_at, trust_at};
 pub(crate) use worktree::PROVISION_MAX_SUBPROCESS_CALLS;
 pub use worktree::{branch_from_worktree, teardown_task, validate_repo_path, TeardownFailure};
 

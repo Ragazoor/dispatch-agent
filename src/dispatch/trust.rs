@@ -11,7 +11,12 @@ fn project_key(repo_path: &str) -> String {
 /// carries the path a caller should use — the real `$HOME/.claude.json` in
 /// production, an injected tempfile in tests — so this is the seam a
 /// `commands::dispatch` test can point elsewhere without mutating the real
-/// file. See [`claude_json_path`] for the production default.
+/// file. The production default is `crate::setup::user_global_config_path`,
+/// resolved once by `runtime::StartupPaths::resolve` — one resolution shared
+/// with the configuration directory beside it, so an absent `$HOME` is
+/// reported rather than composed into a location at the filesystem root. See
+/// docs/specs/dispatch.allium:
+/// `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
 pub(crate) fn is_trusted_at(claude_json: &Path, repo_path: &str) -> Result<bool> {
     if !claude_json.exists() {
         return Ok(false);
@@ -54,15 +59,6 @@ pub(crate) fn trust_at(claude_json: &Path, repo_path: &str) -> Result<()> {
     std::fs::write(claude_json, updated)
         .with_context(|| format!("failed to write {}", claude_json.display()))?;
     Ok(())
-}
-
-/// The real `$HOME/.claude.json` path. The production default for
-/// `TuiRuntime::claude_json_path`, set once at bootstrap; every trust check
-/// then reads that field rather than re-deriving this, which is what lets a
-/// test substitute a tempfile instead.
-pub(crate) fn claude_json_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::PathBuf::from(format!("{home}/.claude.json"))
 }
 
 #[cfg(test)]

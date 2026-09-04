@@ -32,6 +32,18 @@
 //! the two halves agree only while the lookup reads nothing but `$HOME` — see
 //! `crate::setup::claude_dir` and docs/specs/dispatch.allium:
 //! `SpawnSitesAndStartupNameTheSameConfigurationDirectory`.
+//!
+//! Nor does it settle what happens when there is no home directory to find it
+//! under. That is `crate::setup::home_dir`, the one place `$HOME` is read and
+//! the one definition of what makes it unavailable — see
+//! docs/specs/dispatch.allium:
+//! `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
+//!
+//! Note that these tokens are not simply "names inside `~/.claude`":
+//! `claude_dir_name!()` names that directory itself, a sibling of the trust
+//! store rather than something within it. What they have in common is a
+//! spawn-side literal to agree with, which is why the trust store's own name
+//! is stated in `crate::setup` and not here.
 
 /// The configuration directory's name, directly beneath the home directory.
 macro_rules! claude_dir_name {

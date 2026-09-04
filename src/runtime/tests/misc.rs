@@ -1078,7 +1078,7 @@ mod startup_paths {
     /// startup to the same lookup. Neither alone rules out a `resolve` that
     /// quietly hands startup somewhere else.
     ///
-    /// This mirrors `resolve`'s two lines on purpose. It cannot fail for a
+    /// This mirrors `resolve`'s composition on purpose. It cannot fail for a
     /// change in what those lookups *return* — that is the dispatch-side test's
     /// job — only if `resolve` stops delegating to them.
     ///
@@ -1096,6 +1096,28 @@ mod startup_paths {
             "startup must be handed the same configuration directory setup \
              resolves — that is the directory the spawn constant's literals \
              are checked against"
+        );
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `AnUnavailableHomeDirectoryIsAFailureNotAPath`. The trust store's
+    /// writer-side link.
+    ///
+    /// `resolve` returning a `Result` is what carries the absent-home failure
+    /// out to `src/main.rs::cmd_tui`, and this pins that the trust store is
+    /// one of the locations that failure covers — that `resolve` gets it from
+    /// the same lookup as the configuration directory rather than deriving it
+    /// a second way, which is how the two came to disagree about an absent
+    /// `$HOME` in the first place.
+    #[test]
+    fn resolve_delegates_to_the_shared_trust_store_lookup() {
+        let paths = StartupPaths::resolve().expect("$HOME must be set");
+
+        assert_eq!(
+            paths.claude_json_path,
+            crate::setup::user_global_config_path().expect("$HOME must be set"),
+            "startup must be handed the trust store the one $HOME reading \
+             resolves, not a path derived independently of it"
         );
     }
 }

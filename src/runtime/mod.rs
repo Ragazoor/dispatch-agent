@@ -171,10 +171,16 @@ impl StartupPaths {
     /// Resolve the real `$HOME`-derived locations used in production. The one
     /// call site is `src/main.rs`; everything downstream takes the resolved
     /// struct.
+    ///
+    /// The home directory is read once here — the outermost edge of the flow —
+    /// and both locations are composed from that one reading, so they cannot
+    /// disagree about whether it was available. See docs/specs/dispatch.allium:
+    /// `AnUnavailableHomeDirectoryIsAFailureNotAPath`.
     pub fn resolve() -> Result<Self> {
+        let home = crate::setup::home_dir()?;
         Ok(Self {
-            claude_dir: crate::setup::claude_dir()?,
-            claude_json_path: dispatch::claude_json_path(),
+            claude_dir: crate::setup::claude_dir_in(&home),
+            claude_json_path: crate::setup::user_global_config_path_in(&home),
         })
     }
 }

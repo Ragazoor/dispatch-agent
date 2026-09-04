@@ -30,7 +30,13 @@ pub fn default_db_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME")
+            // An empty `$HOME` takes the same fallback as an absent one: it
+            // would otherwise resolve `.local/share` against whatever
+            // directory the process was started from. See
+            // `crate::setup::home_dir`.
+            let home = std::env::var("HOME")
+                .ok()
+                .filter(|home| !home.is_empty())
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             home.join(".local").join("share")

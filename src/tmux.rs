@@ -531,11 +531,22 @@ pub fn set_focus_events(runner: &dyn ProcessRunner) -> Result<()> {
     Ok(())
 }
 
-/// Path to the user's `~/.tmux.conf`. Owned here so callers don't re-derive
-/// the `$HOME`-relative location.
+/// Path to the user's `~/.tmux.conf` under a given home directory.
+///
+/// Owned here so callers don't re-derive the `$HOME`-relative location, and
+/// takes the home directory rather than reading it so this is not a second
+/// reader with its own idea of what an unavailable `$HOME` means — see
+/// `crate::setup::home_dir` and docs/specs/dispatch.allium:
+/// `AnUnavailableHomeDirectoryIsAFailureNotAPath`. This one *writes* the file
+/// it names, so an empty `$HOME` resolving here would drop a `.tmux.conf` into
+/// whatever directory the process happened to be started from.
+pub(crate) fn tmux_conf_path_in(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".tmux.conf")
+}
+
+/// [`tmux_conf_path_in`] against the operator's own home directory.
 pub(crate) fn tmux_conf_path() -> Result<std::path::PathBuf> {
-    let home = std::env::var("HOME").context("HOME not set")?;
-    Ok(std::path::PathBuf::from(home).join(".tmux.conf"))
+    Ok(tmux_conf_path_in(&crate::setup::home_dir()?))
 }
 
 pub(crate) fn write_focus_events_to_tmux_conf_at(path: &std::path::Path) -> Result<()> {
