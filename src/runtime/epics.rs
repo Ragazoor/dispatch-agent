@@ -64,6 +64,7 @@ impl TuiRuntime {
                 feed_command: None,
                 feed_interval_secs: None,
                 group_by_repo: None,
+                feed_append_only: None,
                 parent_epic_id: None,
             },
             "updating epic",
@@ -131,6 +132,7 @@ impl TuiRuntime {
                 feed_command: None,
                 feed_interval_secs: None,
                 group_by_repo: None,
+                feed_append_only: None,
                 parent_epic_id: None,
             },
             "toggling auto dispatch",
@@ -155,6 +157,7 @@ impl TuiRuntime {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: Some(group_by_repo),
+            feed_append_only: None,
             parent_epic_id: None,
         };
         match self.epic_svc.update_epic(params).await {
@@ -215,6 +218,7 @@ impl TuiRuntime {
                 feed_command: None,
                 feed_interval_secs: None,
                 group_by_repo: None,
+                feed_append_only: None,
                 parent_epic_id: Some(new_parent),
             },
             "reparenting epic",

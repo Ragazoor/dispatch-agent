@@ -855,6 +855,30 @@ async fn mcp_create_sub_epic() {
 }
 
 #[tokio::test]
+async fn update_epic_feed_append_only() {
+    let state = test_state().await;
+    let epic = state
+        .db_write()
+        .create_epic("Test", "", None)
+        .await
+        .unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_epic",
+            "arguments": { "epic_id": epic.id.0, "feed_append_only": true }
+        })),
+    )
+    .await;
+    assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+
+    let updated = state.db.get_epic(epic.id).await.unwrap().unwrap();
+    assert!(updated.feed_append_only);
+}
+
+#[tokio::test]
 async fn update_epic_group_by_repo() {
     let state = test_state().await;
     let epic = state

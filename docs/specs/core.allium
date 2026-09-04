@@ -475,6 +475,7 @@ entity Epic {
     feed_command: String?           -- shell command that emits FeedItem JSON (see feeds.allium); null for non-feed epics
     feed_interval_secs: Integer?    -- per-epic poll cadence in seconds; null falls back to config.default_feed_interval
     group_by_repo: Boolean = false      -- when true, feed tasks are grouped into sub-epics by repo name (see feeds.allium)
+    feed_append_only: Boolean = false   -- when true, the feed only ever adds: no stale removal, ever (see feeds.allium: AppendOnlyFeed)
     feed_role: FeedRole = none      -- routing role within a feed hierarchy; `none` for ordinary epics (see feeds.allium: Signal)
     origin: EpicOrigin = manual    -- system-assigned; never settable via MCP
     created_at: Timestamp

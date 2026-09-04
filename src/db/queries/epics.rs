@@ -261,6 +261,7 @@ impl super::super::EpicCrud for Database {
         set_field!(sets, values, patch.sort_order, "sort_order");
         set_field!(sets, values, patch.auto_dispatch, "auto_dispatch");
         set_field!(sets, values, patch.group_by_repo, "group_by_repo");
+        set_field!(sets, values, patch.feed_append_only, "feed_append_only");
         set_field!(
             sets,
             values,

@@ -745,6 +745,7 @@ async fn update_epic_status() {
         feed_command: None,
         feed_interval_secs: None,
         group_by_repo: None,
+        feed_append_only: None,
         parent_epic_id: None,
     })
     .await
@@ -783,6 +784,7 @@ async fn update_epic_no_fields_returns_error() {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: None,
+            feed_append_only: None,
             parent_epic_id: None,
         })
         .await
@@ -821,6 +823,7 @@ async fn update_epic_auto_dispatch_persists() {
         feed_command: None,
         feed_interval_secs: None,
         group_by_repo: None,
+        feed_append_only: None,
         parent_epic_id: None,
     })
     .await

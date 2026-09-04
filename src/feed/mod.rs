@@ -1006,6 +1006,7 @@ mod tests {
             feed_command: Some("echo hi".to_string()),
             feed_interval_secs: interval_secs,
             group_by_repo: false,
+            feed_append_only: false,
             feed_role: crate::models::FeedRole::None,
             origin: crate::models::EpicOrigin::Manual,
             created_at: chrono::Utc::now(),

@@ -411,6 +411,7 @@ impl TuiRuntime {
                 feed_command: Some(applied.feed_command.clone()),
                 feed_interval_secs: Some(applied.feed_interval_secs),
                 group_by_repo: None,
+                feed_append_only: None,
                 parent_epic_id: None,
             })
             .await

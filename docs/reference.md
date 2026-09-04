@@ -228,6 +228,37 @@ per item under the epic) and **group_by_repo** (items bucketed into per-repo
 sub-epics). Author your own script, point an epic's `feed_command` at it, and
 debug it with `dispatch verify-feed '<command>'` before wiring it on.
 
+#### Append-only feeds
+
+By default a feed **mirrors** its source: a task whose item is missing from the
+latest emission is deleted, and its worktree torn down. That is right for open
+PRs and open CVEs, which stay emitted until they close.
+
+It is wrong for a source that emits **events** — a log scan, say. A log record
+happens once and is never retracted, so absence from the next emission means
+nothing, and a mirroring epic would delete the card on the very next poll after
+creating it. Set `feed_append_only` on such an epic and the removal pass never
+runs for it:
+
+```
+update_epic(epic_id: <id>, feed_append_only: true)
+```
+
+Close such a card by **archiving** it, never by deleting it. An archived task
+keeps its external id, so the feed matches it on every later poll and creates
+nothing — archiving is permanent suppression. A deleted task takes that id with
+it, and the next poll inserts the card again.
+
+The flag is not retroactive either way. Turning it off makes the next cycle a
+mirroring one, which will remove every accumulated task the current emission
+does not name. See `AppendOnlyFeed` in `docs/specs/feeds.allium`.
+
+`scripts/fetch-log-warnings.sh` is the shipped example: it scans a
+tracing-formatted log and emits one card per **distinct** WARN/ERROR record,
+fingerprinted by module target plus the static head of the message. On a
+210k-line log that is 37 cards rather than 106k. Configure it in
+`scripts/log-warnings.conf`.
+
 ### Managed review & CVE feeds
 
 Two feeds are **managed** by dispatch rather than hand-wired. Instead of

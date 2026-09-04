@@ -217,7 +217,7 @@ pub(super) fn apply_pending_stop_if_drained(
 pub(super) const EPIC_COLUMNS: &str =
     "id, title, description, status, plan_path, sort_order, auto_dispatch, \
      parent_epic_id, feed_command, feed_interval_secs, created_at, updated_at, group_by_repo, \
-     feed_role, origin";
+     feed_append_only, feed_role, origin";
 
 /// Reconstruct `Option<TaskUrl>` from the `url` + `url_type` columns. Both null
 /// → None; both set → Some. A url present without a type (shouldn't happen)
@@ -301,6 +301,7 @@ pub(super) fn row_to_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Epic> {
         feed_command: row.get("feed_command")?,
         feed_interval_secs: row.get("feed_interval_secs")?,
         group_by_repo: row.get::<_, bool>("group_by_repo")?,
+        feed_append_only: row.get::<_, bool>("feed_append_only")?,
         feed_role: parse_feed_role(&row.get::<_, String>("feed_role")?),
         origin: parse_epic_origin(&row.get::<_, String>("origin")?),
         created_at: parse_datetime(&created_str)?,

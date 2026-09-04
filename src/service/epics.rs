@@ -20,6 +20,9 @@ pub struct UpdateEpicParams {
     pub feed_command: Option<FieldUpdate>,
     pub feed_interval_secs: Option<Option<i64>>,
     pub group_by_repo: Option<bool>,
+    /// When set, flips whether this epic's feed removes tasks the emission
+    /// omits. See `docs/specs/feeds.allium`: `AppendOnlyFeed`.
+    pub feed_append_only: Option<bool>,
     /// Triple-state: None = no change, Some(Some(id)) = reparent, Some(None) = make root.
     pub parent_epic_id: Option<Option<EpicId>>,
 }
@@ -44,6 +47,7 @@ impl UpdateEpicParams {
             feed_command,
             feed_interval_secs,
             group_by_repo,
+            feed_append_only,
             parent_epic_id,
         } = self;
 
@@ -57,6 +61,7 @@ impl UpdateEpicParams {
             ("feed_command", feed_command.is_some()),
             ("feed_interval_secs", feed_interval_secs.is_some()),
             ("group_by_repo", group_by_repo.is_some()),
+            ("feed_append_only", feed_append_only.is_some()),
             ("parent_epic_id", parent_epic_id.is_some()),
         ]
         .into_iter()
@@ -362,6 +367,9 @@ impl EpicService {
         if let Some(fi) = params.feed_interval_secs {
             patch = patch.feed_interval_secs(fi);
         }
+        if let Some(append_only) = params.feed_append_only {
+            patch = patch.feed_append_only(append_only);
+        }
         if let Some(gbr) = params.group_by_repo {
             patch = patch.group_by_repo(gbr);
         }
@@ -528,6 +536,7 @@ mod tests {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: None,
+            feed_append_only: None,
             parent_epic_id: None,
         }
     }
@@ -624,6 +633,7 @@ mod tests {
                 "group_by_repo",
                 UpdateEpicParams {
                     group_by_repo: Some(true),
+                    feed_append_only: None,
                     ..base_params(EpicId(1))
                 },
             ),
@@ -804,6 +814,7 @@ mod tests {
         let svc = EpicService::new(db.clone());
         svc.update_epic(UpdateEpicParams {
             group_by_repo: Some(true),
+            feed_append_only: None,
             ..base_params(epic.id)
         })
         .await
@@ -1160,6 +1171,7 @@ mod tests {
                 feed_command: None,
                 feed_interval_secs: None,
                 group_by_repo: None,
+                feed_append_only: None,
             })
             .await;
         assert!(
@@ -1194,6 +1206,7 @@ mod tests {
                 feed_command: None,
                 feed_interval_secs: None,
                 group_by_repo: None,
+                feed_append_only: None,
             })
             .await;
         assert!(

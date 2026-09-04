@@ -425,12 +425,13 @@ rule ListEpicsViaMcp {
 rule UpdateEpicViaMcp {
     when: McpUpdateEpic(epic, title?, description?, status?, plan?, sort_order?,
                         feed_command?, feed_interval_secs?, group_by_repo?,
-                        parent_epic_id?)
+                        feed_append_only?, parent_epic_id?)
 
     requires: title != null or description != null or status != null
               or plan != null or sort_order != null
               or feed_command != omitted
               or feed_interval_secs != omitted or group_by_repo != null
+              or feed_append_only != null
               or parent_epic_id != omitted
 
     -- Cannot set status to archived via MCP. The agent receives a
@@ -499,6 +500,15 @@ rule UpdateEpicViaMcp {
         -- that setting it here flips the flag ONLY — no task migration is
         -- performed. See the guidance below.
         if group_by_repo != null: epic.group_by_repo = group_by_repo
+    ensures:
+        -- feed_append_only is a plain boolean set (absent = no change).
+        -- Unlike group_by_repo this needs no migration counterpart: the flag
+        -- changes only what FUTURE cycles do, and neither direction rewrites
+        -- an existing task. See feeds.allium: AppendOnlyFeed for what each
+        -- direction costs — in particular that turning it OFF hands the next
+        -- cycle licence to remove every accumulated task the emission does
+        -- not name.
+        if feed_append_only != null: epic.feed_append_only = feed_append_only
     ensures:
         -- parent_epic_id uses triple-state semantics: omitted = no change,
         -- integer = reparent under that epic, null = make this a root epic.

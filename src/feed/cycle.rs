@@ -130,16 +130,24 @@ impl FeedCycle {
         // agent whose PR one soft-failed sub-query happened to drop.
         // feeds.allium: DegradedNonEmptyEmission.
         let degraded = super::degraded_partial_emission(items.len(), &output.stderr);
-        let mode = match &degraded {
-            Some(reason) => {
-                tracing::warn!(
-                    epic_id = self.epic_id.0,
-                    epic_title = %self.epic_title,
-                    "feed: syncing additively, no removals this cycle: {reason}"
-                );
-                super::SyncMode::Additive
-            }
-            None => super::SyncMode::Reconcile,
+        if let Some(reason) = &degraded {
+            tracing::warn!(
+                epic_id = self.epic_id.0,
+                epic_title = %self.epic_title,
+                "feed: syncing additively, no removals this cycle: {reason}"
+            );
+        }
+        // The two causes of additivity are independent and neither overrides
+        // the other — additive is their union. `degraded` says this EMISSION is
+        // not trusted; `feed_append_only` says this EPIC never mirrors at all,
+        // because its source emits events that are never retracted. Only the
+        // former is reported: withholding removals is a symptom there and the
+        // configured behaviour here. feeds.allium: DegradedNonEmptyEmission,
+        // AppendOnlyFeed.
+        let mode = if degraded.is_some() || epic.feed_append_only {
+            super::SyncMode::Additive
+        } else {
+            super::SyncMode::Reconcile
         };
 
         let count = items.len();
@@ -385,5 +393,137 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&fifo);
+    }
+
+    // ---------------------------------------------------------------------
+    // AppendOnlyFeed (feeds.allium)
+    //
+    // The mode selection is the whole of this rule's implementation: the
+    // ingest layer below already implements "no removals" and is covered by
+    // the additive_* tests in src/feed/ingest/tests.rs. What these pin is
+    // that an append-only epic REACHES that layer in Additive mode, that a
+    // mirroring epic still does not, and that being append-only is not
+    // reported as a degradation.
+    // ---------------------------------------------------------------------
+
+    const TWO_RECORDS: &str = r#"[{"external_id":"log-1","title":"warn A","description":"","status":"backlog","tag":"bug"},{"external_id":"log-2","title":"warn B","description":"","status":"backlog","tag":"bug"}]"#;
+    const ONE_RECORD: &str = r#"[{"external_id":"log-2","title":"warn B","description":"","status":"backlog","tag":"bug"}]"#;
+
+    /// A plain flat feed epic (no role, no grouping) whose command emits
+    /// `emission`, optionally declaring itself append-only.
+    async fn flat_feed_epic(db: &Database, emission: &str, append_only: bool) -> EpicId {
+        let epic = db.create_epic("Log warnings", "", None).await.unwrap();
+        let cmd = format!("echo '{emission}'");
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new()
+                .feed_command(Some(cmd.as_str()))
+                .feed_append_only(append_only),
+        )
+        .await
+        .unwrap();
+        epic.id
+    }
+
+    /// Repoint an existing feed epic at a new emission and run another cycle.
+    async fn recycle(db: &Arc<Database>, epic_id: EpicId, emission: &str) -> FeedCycleOutcome {
+        let cmd = format!("echo '{emission}'");
+        db.patch_epic(epic_id, &EpicPatch::new().feed_command(Some(cmd.as_str())))
+            .await
+            .unwrap();
+        cycle(Arc::clone(db), epic_id).run().await
+    }
+
+    async fn external_ids(db: &Database, epic_id: EpicId) -> Vec<String> {
+        let mut ids: Vec<String> = db
+            .list_tasks_for_epic(epic_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.external_id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// The rule itself. A log record is an event: it is emitted once and never
+    /// again, and its absence from the next emission says nothing. An
+    /// append-only epic must therefore keep the task.
+    #[tokio::test]
+    async fn an_append_only_epic_keeps_a_task_absent_from_the_emission() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic_id = flat_feed_epic(&db, TWO_RECORDS, true).await;
+
+        cycle(Arc::clone(&db), epic_id).run().await;
+        assert_eq!(external_ids(&db, epic_id).await, ["log-1", "log-2"]);
+
+        recycle(&db, epic_id, ONE_RECORD).await;
+
+        assert_eq!(
+            external_ids(&db, epic_id).await,
+            ["log-1", "log-2"],
+            "an append-only feed never removes: log-1 is absent from the emission, not retracted by it"
+        );
+    }
+
+    /// The boundary the rule must not cross. Identical setup, flag off: the
+    /// ordinary feed-as-source-of-truth removal still applies.
+    #[tokio::test]
+    async fn a_mirroring_epic_still_removes_a_task_absent_from_the_emission() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic_id = flat_feed_epic(&db, TWO_RECORDS, false).await;
+
+        cycle(Arc::clone(&db), epic_id).run().await;
+        assert_eq!(external_ids(&db, epic_id).await, ["log-1", "log-2"]);
+
+        recycle(&db, epic_id, ONE_RECORD).await;
+
+        assert_eq!(
+            external_ids(&db, epic_id).await,
+            ["log-2"],
+            "feed_append_only defaults off, so absence from a trusted emission still removes"
+        );
+    }
+
+    /// An append-only cycle is healthy, not degraded. Reporting it as degraded
+    /// every poll would train the user to ignore the line that matters.
+    #[tokio::test]
+    async fn an_append_only_cycle_is_not_reported_as_degraded() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic_id = flat_feed_epic(&db, TWO_RECORDS, true).await;
+
+        match cycle(db, epic_id).run().await {
+            FeedCycleOutcome::Synced { degraded, .. } => assert!(
+                degraded.is_none(),
+                "withholding removals is this epic's configured behaviour, not a symptom, got: {degraded:?}"
+            ),
+            _ => panic!("a clean append-only emission must sync"),
+        }
+    }
+
+    /// The two causes of additivity are independent, and neither swallows the
+    /// other: an append-only epic whose command ALSO wrote to stderr is still
+    /// a degraded run, and must still say so.
+    #[tokio::test]
+    async fn an_append_only_epic_still_reports_a_degraded_emission() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Log warnings", "", None).await.unwrap();
+        let cmd = format!("echo '{TWO_RECORDS}'; echo 'scan window truncated' >&2");
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new()
+                .feed_command(Some(cmd.as_str()))
+                .feed_append_only(true),
+        )
+        .await
+        .unwrap();
+
+        match cycle(db, epic.id).run().await {
+            FeedCycleOutcome::Synced { degraded, .. } => assert!(
+                degraded.is_some(),
+                "append-only does not suppress the degradation report; the command still failed part way"
+            ),
+            _ => panic!("a non-empty emission must sync even with stderr"),
+        }
     }
 }

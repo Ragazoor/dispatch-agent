@@ -6,8 +6,10 @@
 --        an Epic.
 -- Includes: FeedItem schema, upsert semantics, status preservation, polling
 --           cadence, error handling, the seeded example epic, the verify-feed
---           validator CLI, and the role-routed reconcile path that splits a
---           single PR-review emission across My/Team/Bots sub-epics.
+--           validator CLI, the role-routed reconcile path that splits a
+--           single PR-review emission across My/Team/Bots sub-epics, and the
+--           append-only mode for sources that emit events rather than
+--           mirroring state (AppendOnlyFeed).
 -- Excludes: Specific feed scripts. dispatch ships reference shell-script
 --           templates under `scripts/`, but the GENERIC feed runtime
 --           (flat upsert + group_by_repo) never embeds upstream-specific
@@ -310,10 +312,50 @@ value FeedItem {
 --   - scripts/fetch-reviews.sh    — every open PR the user is involved with,
 --                                   as a SINGLE deduped FeedItem array (see
 --                                   below)
+--   - scripts/fetch-log-warnings.sh — distinct WARN/ERROR records in a
+--                                   tracing-formatted log file, one FeedItem
+--                                   per distinct record rather than per line.
+--                                   The only shipped template for an
+--                                   APPEND-ONLY epic (AppendOnlyFeed); see
+--                                   "Log-warning triage" below
 --
--- All four templates ship with empty REPOS placeholders and are inert until
--- the user edits them. They are reference implementations, not part of
--- the feed runtime.
+-- The first four templates ship with empty REPOS placeholders, and
+-- fetch-log-warnings.sh with an empty LOG_FILE placeholder; all five are
+-- inert until the user edits them. They are reference implementations, not
+-- part of the feed runtime.
+--
+-- == scripts/fetch-log-warnings.sh: events, not state ==
+--
+-- The other four templates mirror an upstream that has an open/closed state.
+-- This one does not: a log record is an event, so its epic sets
+-- core/Epic.feed_append_only (AppendOnlyFeed) and the script never has to
+-- represent "still a problem".
+--
+-- The whole design question for such a script is what makes two log lines
+-- THE SAME PROBLEM, because that is what external_id has to capture. A raw
+-- line is useless — every line differs by timestamp, and a real log holds
+-- six-figure counts of a handful of distinct problems. The template
+-- fingerprints each record as its emitting MODULE TARGET plus the STATIC HEAD
+-- of its message (up to the first ":" or " key="), which is a proxy for the
+-- call site that survives refactoring, unlike a file:line. Everything after
+-- that head is the interpolated detail that varies per occurrence.
+--
+-- The item's `url` is the repo root ("https://github.com/<org>/<repo>"), a
+-- form extract_github_repo already accepts, so UpsertFeedTasks resolves a
+-- repo_path and the task is dispatchable. A log record carries no upstream
+-- URL of its own, and this is the whole reason the field is set.
+--
+-- The description carries the occurrence count, first and last seen
+-- timestamps and a sample of raw lines. Those are re-applied on every poll
+-- (UpsertFeedTasks refreshes description on conflict), so an open card keeps
+-- a current count while the user works on it.
+--
+-- WHY THIS IS A TEMPLATE AND NOT A RUNTIME FEATURE. Both halves of it are
+-- policy: which log file, and what counts as one problem. The tracing format
+-- the template parses is dispatch's own; a user pointing this at a different
+-- repo's logs edits the fingerprint recipe. Nothing about log scanning
+-- reaches the runtime — the runtime learned only that a feed may be
+-- append-only, which is upstream-agnostic.
 --
 -- == scripts/fetch-reviews.sh: single emission with routing signals ==
 --
@@ -863,9 +905,12 @@ rule UpsertFeedTasks {
     -- touched by this rule.
     --
     -- That source-of-truth reading holds only for an emission dispatch
-    -- trusts. An ADDITIVE cycle (DegradedNonEmptyEmission) removes nothing:
-    -- the per-item upsert above runs unchanged, the deletion below does not
-    -- run at all.
+    -- trusts, on a feed that mirrors state at all. An ADDITIVE cycle removes
+    -- nothing: the per-item upsert above runs unchanged, the deletion below
+    -- does not run at all. Two independent causes make a cycle additive —
+    -- DegradedNonEmptyEmission (this emission is not trusted) and
+    -- AppendOnlyFeed (this epic never mirrors) — and this clause cannot tell
+    -- them apart, nor does it need to.
 
     ensures:
         let known_paths = list_repo_paths() ?? {}
@@ -931,10 +976,12 @@ rule UpsertFeedTasks {
         -- can carry an in-flight agent's session, and dropping the row
         -- alone orphans that worktree on disk.
         --
-        -- SKIPPED ENTIRELY when the cycle is additive
-        -- (DegradedNonEmptyEmission): absence from a tainted emission is not
-        -- evidence of anything, and this clause is where that evidence would
-        -- be acted on irreversibly.
+        -- SKIPPED ENTIRELY when the cycle is additive, for either reason.
+        -- Under DegradedNonEmptyEmission, absence from a tainted emission is
+        -- not evidence of anything. Under AppendOnlyFeed, absence from ANY
+        -- emission is not evidence of anything, because the source emits
+        -- events that are never retracted. Either way this clause is where
+        -- that missing evidence would be acted on irreversibly.
         if not additive:
             for task in Tasks where epic = epic and external_id != null:
                 if not items.any(i => i.external_id = task.external_id):
@@ -1015,7 +1062,7 @@ rule GroupedFeedUpsert {
     -- particular deletes and recreates tasks wholesale, so a feed task carrying
     -- an in-flight agent must not have its worktree left orphaned on disk.
     --
-    -- On an ADDITIVE cycle (DegradedNonEmptyEmission) the present groups are
+    -- On an ADDITIVE cycle (DegradedNonEmptyEmission or AppendOnlyFeed) the present groups are
     -- still upserted, but BOTH clearing passes — absent sub-epics and the
     -- parent's flat tasks — are skipped, so nothing is removed and no
     -- TaskTeardown runs. Note that grouping migration is a clearing pass in
@@ -1110,7 +1157,7 @@ rule FlatFeedReconcile {
     -- harmless no-op (empty loop), so it fires on every flat sync, not only the
     -- first after the toggle.
     --
-    -- On an ADDITIVE cycle (DegradedNonEmptyEmission) the re-home still runs —
+    -- On an ADDITIVE cycle (DegradedNonEmptyEmission or AppendOnlyFeed) the re-home still runs —
     -- it moves tasks and deletes only sub-epics it has just emptied, so it
     -- destroys nothing and does not read the emission — while the removal half
     -- is skipped by UpsertFeedTasks' own additive gate. A re-homed task absent
@@ -1186,7 +1233,8 @@ rule RoleRoutedFeedSync {
     -- created for their own PR by hand — or a dispatch task that opened it —
     -- is unaffected.
     --
-    -- The filter runs on the additive (DegradedNonEmptyEmission) path too: it
+    -- The filter runs on the additive (DegradedNonEmptyEmission or
+    -- AppendOnlyFeed) path too: it
     -- shrinks what gets inserted, and the deletes it would otherwise imply are
     -- skipped along with every other removal on that path.
     --
@@ -1366,7 +1414,8 @@ rule RoleRoutedFeedSync {
         -- performs tasks.allium's TaskTeardown on the reported row — this is
         -- the path a merged PR's in-flight review agent travels, so its tmux
         -- window and worktree must be released, not orphaned. Skipped
-        -- entirely when the cycle is additive (DegradedNonEmptyEmission): this
+        -- entirely when the cycle is additive (DegradedNonEmptyEmission or
+        -- AppendOnlyFeed): this
         -- is the exact clause that would destroy a live review agent's
         -- worktree on a partially degraded emission.
         if not additive:
@@ -1466,7 +1515,8 @@ rule RoleRoutedFeedSync {
         -- reaches it is force-torn-down even with a live agent in it. That is
         -- deliberate and stays: the protection against tearing down a live
         -- agent lives UPSTREAM, in whether the delete happens at all
-        -- (DegradedNonEmptyEmission), not in a state check here. See that
+        -- (DegradedNonEmptyEmission, or AppendOnlyFeed for an epic that
+        -- never removes at all), not in a state check here. See the former
         -- rule's "why not gate the teardown on task state instead" for the
         -- alternative that was rejected, and do not reintroduce it here.
         --
@@ -2019,6 +2069,114 @@ rule DegradedNonEmptyEmission {
         -- tears down — is pinned by the pre-existing tests of UpsertFeedTasks
         -- and RoleRoutedFeedSync, which must stay green unmodified.
 }
+
+rule AppendOnlyFeed {
+    when: FeedCommandCompleted(epic, items)
+
+    -- An epic's standing declaration that its feed emits EVENTS, not STATE.
+    --
+    -- Every other feed epic MIRRORS an upstream: an open PR, an open CVE. The
+    -- item is emitted for as long as the thing it describes is open, so its
+    -- absence from a trusted emission is evidence that the thing closed, and
+    -- the feed-as-source-of-truth removal in UpsertFeedTasks acts on that
+    -- evidence.
+    --
+    -- Some sources have no "open" state to mirror. A log warning is the
+    -- motivating one: it happened, once, at a point in time, and nothing
+    -- upstream ever retracts it. Absence from a later emission is evidence of
+    -- nothing at all — only that the scanned window moved on, or the file
+    -- rotated. Read as a mirror, such a feed would tear down a task, and with
+    -- it a worktree, a branch and a tmux window, on the very next poll after
+    -- creating it.
+    --
+    -- core/Epic.feed_append_only = true is how an epic says which kind it is.
+    -- The effect is exactly DegradedNonEmptyEmission's: the sync runs
+    -- ADDITIVELY. Every write that follows from what the emission CONTAINS
+    -- still happens — insert, field refresh, cross-role move — and every
+    -- removal clause in UpsertFeedTasks, GroupedFeedUpsert, FlatFeedReconcile
+    -- and RoleRoutedFeedSync is skipped. Because nothing is removed, no
+    -- TaskTeardown runs.
+    --
+    -- WHY THE SAME MECHANISM AND NOT A NEW ONE. "Perform the insert-and-refresh
+    -- half of a sync and none of the removal half" is behaviour the runtime
+    -- already has; today it is reached only by accident, when a script
+    -- soft-fails. An append-only epic wants it deliberately and permanently.
+    -- A second mechanism with the same postcondition would be a second thing
+    -- to keep correct, and the two would drift. There is exactly one additive
+    -- path, and both causes reach it.
+    --
+    -- HOW SUCH A TASK IS EVER CLOSED. By the user, never by the feed. An
+    -- ARCHIVED task keeps its row, its epic and its external_id (tasks.allium:
+    -- ArchiveTask moves status and releases resources; it does not drop the
+    -- row), so the ON CONFLICT arm of UpsertFeedTasks matches it on every
+    -- later poll and the status-preservation clause leaves it archived. A
+    -- re-emitted item whose task is archived therefore refreshes that archived
+    -- task's fields and creates nothing new. Archiving is permanent
+    -- suppression of an external_id, and it is the ONLY suppression the
+    -- mechanism offers — dispatch keeps no separate record of ids it has
+    -- retired. DELETING the task is NOT suppression: it removes the conflict
+    -- target, so the next emission carrying that external_id inserts a fresh
+    -- task. That asymmetry is a consequence of where the state lives, and it
+    -- is the reason the user-facing instruction for these epics is "archive",
+    -- not "delete".
+    --
+    -- INTERACTION WITH THE DEGRADED-EMISSION RULES. The causes of additivity
+    -- are independent and neither overrides the other; additive is their
+    -- union. An append-only epic whose command also writes to stderr is
+    -- additive for both reasons, with the same single effect.
+    -- DegradedEmptyEmission still suppresses the whole sync, and this rule's
+    -- guard defers to it: being append-only is not a reason to trust a
+    -- zero-item emission from a command that reported an error. The guard
+    -- likewise defers to FeedCommandFailure on a non-zero exit. This rule
+    -- fires only where a sync would have run anyway, and changes only whether
+    -- that sync removes.
+    --
+    -- THE FLAG IS NOT RETROACTIVE, IN EITHER DIRECTION. Turning it ON stops
+    -- future removals; it does not restore a task an earlier trusted cycle
+    -- already removed. Turning it OFF makes the very next cycle a mirroring
+    -- one, which removes every accumulated task the current emission does not
+    -- name — for a log feed, potentially all of them. That is the honest
+    -- consequence of the flag meaning what it says, and it is why the flag
+    -- belongs to wiring an epic up rather than to a board keybinding.
+
+    requires: epic.feed_append_only and exit_status = 0
+              and (items.count > 0 or stderr = "")
+
+    ensures:
+        -- The sync dispatches exactly as FeedSync says (by role, by
+        -- group_by_repo), with removals disabled — permanently, for this epic.
+        FeedSync(epic, items, additive: true)
+        for task in Tasks where task.external_id != null and task.epic in epic.subtree:
+            -- Absence from an append-only feed's emission is not evidence of
+            -- anything, so nothing is removed, whatever its status and whether
+            -- or not it carries agent state.
+            exists task
+
+    @guidance
+        -- Implementation: the flag is read alongside the two degraded
+        -- predicates in src/feed/cycle.rs::FeedCycle::run, which selects
+        -- src/feed/ingest/mod.rs::SyncMode::Additive when EITHER a degraded
+        -- predicate fires OR the epic is append-only. Everything below that
+        -- point — run_feed_sync, sync_grouped_feed,
+        -- run_role_routed_feed_sync, upsert_feed_tasks_additive — is
+        -- unchanged and untouched by this rule: it already implements "no
+        -- removals" and does not care why it was asked for.
+        --
+        -- SURFACING. An append-only cycle is a normal, healthy cycle, so it
+        -- is NOT reported the way a degraded one is. DegradedNonEmptyEmission
+        -- appends "(additive, no removals: <reason>)" to the manual-refresh
+        -- status line because withholding removals there is a symptom; here
+        -- it is the configured behaviour, and reporting it every poll would
+        -- train the user to ignore the line that matters. A cycle that is
+        -- additive for BOTH reasons still reports the degradation.
+        --
+        -- Coverage: src/feed/cycle.rs for the mode selection (append-only
+        -- alone, degraded alone, both together, and the clean mirroring
+        -- boundary); src/feed/ingest/tests.rs for the reconcile behaviour,
+        -- which reuses the existing additive_* assertions rather than
+        -- duplicating them.
+}
+
 
 -- FeedItemParse (conceptual): the JSON decode of a feed command's stdout into
 -- Vec<FeedItem> lives in ONE shared function, src/feed/parse.rs::parse_feed_items,

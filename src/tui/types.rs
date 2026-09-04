@@ -1064,6 +1064,7 @@ mod tests {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: false,
+            feed_append_only: false,
             feed_role: crate::models::FeedRole::None,
             origin: crate::models::EpicOrigin::Manual,
             created_at: now,

@@ -154,6 +154,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (91, migrate_v91_clamp_feed_intervals),
     (92, migrate_v92_add_phoenix),
     (93, migrate_v93_fix_root_epic_feed_role_uniqueness),
+    (94, migrate_v94_add_feed_append_only),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1896,6 +1897,19 @@ fn migrate_v65_add_epic_feed_role(conn: &Connection) -> Result<()> {
                  WHERE feed_role <> 'none';",
         )
         .context("Failed to add feed_role unique index (migration v65)")?;
+    }
+    Ok(())
+}
+
+/// `feed_append_only` marks an epic whose feed emits EVENTS rather than
+/// mirroring upstream state, so its sync never removes (feeds.allium:
+/// AppendOnlyFeed). Defaults to 0: every existing epic keeps mirroring.
+fn migrate_v94_add_feed_append_only(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "epics", "feed_append_only") {
+        conn.execute_batch(
+            "ALTER TABLE epics ADD COLUMN feed_append_only BOOLEAN NOT NULL DEFAULT 0;",
+        )
+        .context("Failed to add feed_append_only column to epics")?;
     }
     Ok(())
 }

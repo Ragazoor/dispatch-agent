@@ -167,6 +167,7 @@ patch_struct! {
         nullable sort_order:         i64,
         plain    auto_dispatch:      bool,
         plain    group_by_repo:      bool,
+        plain    feed_append_only:   bool,
         plain    feed_role:          crate::models::FeedRole,
         plain    origin:             crate::models::EpicOrigin,
         nullable feed_command:       &'a str,

@@ -956,6 +956,32 @@ async fn patch_epic_auto_dispatch_persists() {
 }
 
 #[tokio::test]
+async fn patch_epic_feed_append_only_defaults_false() {
+    let db = Database::open_in_memory().await.unwrap();
+    let epic = db.create_epic("Test", "", None).await.unwrap();
+    assert!(
+        !epic.feed_append_only,
+        "mirroring is the default; an epic opts in to append-only"
+    );
+}
+
+#[tokio::test]
+async fn patch_epic_feed_append_only_persists() {
+    let db = Database::open_in_memory().await.unwrap();
+    let epic = db.create_epic("Test", "", None).await.unwrap();
+    db.patch_epic(epic.id, &EpicPatch::new().feed_append_only(true))
+        .await
+        .unwrap();
+    let updated = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert!(updated.feed_append_only);
+    db.patch_epic(epic.id, &EpicPatch::new().feed_append_only(false))
+        .await
+        .unwrap();
+    let re_disabled = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert!(!re_disabled.feed_append_only);
+}
+
+#[tokio::test]
 async fn patch_epic_group_by_repo_defaults_false() {
     let db = Database::open_in_memory().await.unwrap();
     let epic = db.create_epic("Test", "", None).await.unwrap();
@@ -1228,6 +1254,7 @@ async fn epic_patch_each_setter_marks_has_changes() {
     assert!(EpicPatch::new().sort_order(None).has_changes());
     assert!(EpicPatch::new().auto_dispatch(true).has_changes());
     assert!(EpicPatch::new().group_by_repo(true).has_changes());
+    assert!(EpicPatch::new().feed_append_only(true).has_changes());
     assert!(EpicPatch::new().feed_command(Some("cmd")).has_changes());
     assert!(EpicPatch::new().feed_command(None).has_changes());
     assert!(EpicPatch::new().feed_interval_secs(Some(60)).has_changes());

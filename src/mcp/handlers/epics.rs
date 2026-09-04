@@ -56,6 +56,8 @@ pub(super) struct UpdateEpicArgs {
     pub(super) feed_interval_secs: Option<Option<i64>>,
     #[serde(default)]
     pub(super) group_by_repo: Option<bool>,
+    #[serde(default)]
+    pub(super) feed_append_only: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_nullable_flexible_id")]
     pub(super) parent_epic_id: Option<Option<EpicId>>,
 }
@@ -223,6 +225,7 @@ pub(super) async fn handle_update_epic(
         }),
         feed_interval_secs: parsed.feed_interval_secs,
         group_by_repo: parsed.group_by_repo,
+        feed_append_only: parsed.feed_append_only,
         parent_epic_id: parsed.parent_epic_id,
     };
     let field_names: Vec<String> = params

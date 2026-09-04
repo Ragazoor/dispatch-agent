@@ -24,6 +24,11 @@ pub struct Epic {
     pub feed_command: Option<String>,
     pub feed_interval_secs: Option<i64>,
     pub group_by_repo: bool,
+    /// When true this epic's feed only ever ADDS: the stale-removal pass never
+    /// runs for it, whatever the emission omits. For a source that emits events
+    /// rather than mirroring state — a log scan — absence is not a retraction.
+    /// See `docs/specs/feeds.allium`: `AppendOnlyFeed`.
+    pub feed_append_only: bool,
     pub feed_role: FeedRole,
     pub origin: EpicOrigin,
     pub created_at: DateTime<Utc>,
@@ -351,6 +356,7 @@ mod tests {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: false,
+            feed_append_only: false,
             feed_role: FeedRole::None,
             origin: EpicOrigin::Manual,
             created_at: Utc::now(),
@@ -605,6 +611,7 @@ mod tests {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: false,
+            feed_append_only: false,
             feed_role: FeedRole::None,
             origin: EpicOrigin::Manual,
             created_at: now,
@@ -648,6 +655,7 @@ mod tests {
             feed_command: None,
             feed_interval_secs: None,
             group_by_repo: false,
+            feed_append_only: false,
             feed_role: FeedRole::None,
             origin: EpicOrigin::Manual,
             created_at: Utc::now(),
