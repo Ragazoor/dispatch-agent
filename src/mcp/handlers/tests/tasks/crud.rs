@@ -214,7 +214,36 @@ async fn update_task_invalid_status() {
 }
 
 #[tokio::test]
-async fn update_task_rejects_done_status() {
+async fn update_task_rejects_archived_status() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "archived" }
+        })),
+    )
+    .await;
+    assert_error(&resp, "Cannot set status to archived via MCP");
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_ne!(task.status, crate::models::TaskStatus::Archived);
+}
+
+// -- update_task(status="done") — MarkTaskDoneViaMcp ------------------------
+//
+// A dedicated close-only path (mcp-task-tools.allium: MarkTaskDoneViaMcp),
+// distinct from ExitSessionViaMcp: no exit token, reachable for a session
+// caller or a dispatched agent acting on a task other than its own, never for
+// a dispatched agent closing itself. See dispatch.rs's ChainFixture-based
+// tests for the tmux-teardown and epic-auto-dispatch-chain parity with
+// exit_session.
+
+#[tokio::test]
+async fn update_task_done_marks_task_done_for_session_caller() {
     let state = test_state().await;
     let task_id = create_task_fixture(&state).await;
 
@@ -227,23 +256,253 @@ async fn update_task_rejects_done_status() {
         })),
     )
     .await;
-    assert_error(&resp, "Cannot set status to done or archived via MCP");
+    assert!(
+        resp.error.is_none(),
+        "expected success, got: {:?}",
+        resp.error
+    );
+    assert_eq!(
+        extract_response_text(&resp),
+        format!("Task #{} marked done.", task_id.0)
+    );
 
-    // Verify task status unchanged
     let task = state.db.get_task(task_id).await.unwrap().unwrap();
-    assert_ne!(task.status, crate::models::TaskStatus::Done);
+    assert_eq!(task.status, crate::models::TaskStatus::Done);
+    assert_eq!(
+        task.sub_status,
+        crate::models::SubStatus::default_for(crate::models::TaskStatus::Done)
+    );
+    assert!(
+        task.sort_order.is_some(),
+        "entering done should set the completion-recency rank"
+    );
+}
 
-    // Also verify archived is rejected
+/// Re-closing an already-done task is a no-op for its completion-recency
+/// rank: `sort_order_for_status_transition` treats done -> done as a no-op
+/// for every caller of `TaskService::close_session`, this path included.
+#[tokio::test]
+async fn update_task_done_reclose_keeps_existing_sort_order() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "done" }
+        })),
+    )
+    .await;
+    let first_sort_order = state
+        .db
+        .get_task(task_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .sort_order;
+
     let resp = call(
         &state,
         "tools/call",
         Some(json!({
             "name": "update_task",
-            "arguments": { "task_id": task_id.0, "status": "archived" }
+            "arguments": { "task_id": task_id.0, "status": "done" }
         })),
     )
     .await;
-    assert_error(&resp, "Cannot set status to done or archived via MCP");
+    assert!(
+        resp.error.is_none(),
+        "re-closing an already-done task must succeed"
+    );
+
+    let second_sort_order = state
+        .db
+        .get_task(task_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .sort_order;
+    assert_eq!(
+        first_sort_order, second_sort_order,
+        "re-closing an already-done task must not re-rank it"
+    );
+}
+
+#[tokio::test]
+async fn update_task_done_rejects_when_combined_with_other_fields() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "done", "title": "new title" }
+        })),
+    )
+    .await;
+    assert_error(&resp, "must be the only field set");
+    assert_error(&resp, "title");
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_ne!(task.status, crate::models::TaskStatus::Done);
+    assert_eq!(
+        task.title, "Test Task",
+        "a rejected close must not mutate the task"
+    );
+}
+
+/// `url_type` has no params-level slot without a `url` alongside it (it is a
+/// `[manual]` field only ever consumed inside the non-empty-`url` branch), so
+/// checking field-exclusivity against `UpdateTaskParams` would let this
+/// combination through unnoticed. This exercises the fix: the raw-args check
+/// in `other_update_task_fields_set` catches it directly.
+#[tokio::test]
+async fn update_task_done_rejects_when_combined_with_bare_url_type() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "done", "url_type": "pr" }
+        })),
+    )
+    .await;
+    assert_error(&resp, "must be the only field set");
+    assert_error(&resp, "url_type");
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_ne!(task.status, crate::models::TaskStatus::Done);
+}
+
+/// The done-only check runs before the url/url_type pairing validation, so a
+/// `status="done"` call combined with `url` (missing its required `url_type`)
+/// still gets MarkTaskDoneViaMcp's own close-only error naming `url` — not
+/// the sibling rule's "url_type is required when url is set" — and the task
+/// is untouched either way.
+#[tokio::test]
+async fn update_task_done_combined_with_url_reports_the_close_only_error_first() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "status": "done",
+                "url": "https://github.com/acme/repo/pull/1"
+            }
+        })),
+    )
+    .await;
+    assert_error(&resp, "must be the only field set");
+    assert_error(&resp, "url");
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_ne!(task.status, crate::models::TaskStatus::Done);
+}
+
+#[tokio::test]
+async fn update_task_done_rejects_dispatched_agent_closing_its_own_task() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call_as(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "done" }
+        })),
+        CallerIdentity::Task(task_id),
+    )
+    .await;
+    assert_error(&resp, "Cannot mark your own task done");
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_ne!(task.status, crate::models::TaskStatus::Done);
+}
+
+#[tokio::test]
+async fn update_task_done_allows_dispatched_agent_closing_a_different_task() {
+    let state = test_state().await;
+    let caller_task = create_task_fixture(&state).await;
+    let other_task = create_task_fixture(&state).await;
+
+    let resp = call_as(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": other_task.0, "status": "done" }
+        })),
+        CallerIdentity::Task(caller_task),
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "expected success, got: {:?}",
+        resp.error
+    );
+
+    let task = state.db.get_task(other_task).await.unwrap().unwrap();
+    assert_eq!(task.status, crate::models::TaskStatus::Done);
+}
+
+#[tokio::test]
+async fn update_task_done_unknown_task_errors() {
+    let state = test_state().await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": 9999, "status": "done" }
+        })),
+    )
+    .await;
+    assert_error(&resp, "Task 9999 not found");
+}
+
+#[tokio::test]
+async fn update_task_done_reachable_from_backlog_with_no_window_or_epic() {
+    let state = test_state().await;
+    // create_task_fixture leaves the task in Backlog with no worktree/epic —
+    // the dedicated close path has no precondition on either.
+    let task_id = create_task_fixture(&state).await;
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, crate::models::TaskStatus::Backlog);
+    assert!(task.tmux_window.is_none());
+    assert!(task.epic_id.is_none());
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "done" }
+        })),
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "expected success, got: {:?}",
+        resp.error
+    );
+    assert_eq!(
+        state.db.get_task(task_id).await.unwrap().unwrap().status,
+        crate::models::TaskStatus::Done
+    );
 }
 
 #[tokio::test]

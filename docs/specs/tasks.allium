@@ -1364,13 +1364,25 @@ rule EditTask {
 ------------------------------------------------------------
 
 -- DoneRequiresHumanConfirmation: The Done status transition requires
--- explicit human confirmation via the TUI. MCP tools cannot set status
--- to done or archived. This is enforced in the McpUpdateTask rule
--- preconditions and the ConfirmDone rule requiring review status.
+-- explicit human confirmation via the TUI, OR an equally explicit
+-- session-closing act over MCP — never a dispatched agent silently
+-- self-completing its own task as a side effect of an ordinary field
+-- update. Archived is never settable via MCP at all: UpdateTaskViaMcp's
+-- preconditions (mcp-task-tools.allium) reject it unconditionally, with no
+-- exception.
+--
+-- Done IS reachable over MCP, through exactly two dedicated calls, neither
+-- of which is UpdateTaskViaMcp's own generic multi-field ensures (that rule
+-- refuses status=done outright, same as it always has):
+--   - wrap_up + exit_session (ExitSessionViaMcp, pr-workflow.allium): the
+--     agent's own explicit session-close, gated on an exit token.
+--   - update_task's dedicated status="done" call (MarkTaskDoneViaMcp,
+--     mcp-task-tools.allium): a session caller, or a dispatched agent acting
+--     on a task OTHER than its own — never a dispatched agent closing
+--     itself, which must still go through the first path. No exit token;
+--     reuses ExitSessionViaMcp's own terminal-write/teardown/chain tail.
 -- Exception: PrMerged transitions are automatic because the PR merge on
 -- GitHub constitutes human confirmation via the code review process.
--- WrapUpRebase is agent-initiated (the MCP wrap_up tool); its Done
--- transition is applied by the agent's subsequent exit_session call.
 
 -- DispatchMcpToolsAreTransparent: Dispatch MCP tool calls (get_task,
 -- wrap_up, update_task, etc.) must not trigger automatic status

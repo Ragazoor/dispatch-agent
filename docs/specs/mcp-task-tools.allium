@@ -47,13 +47,23 @@ rule UpdateTaskViaMcp {
         if url != null and url != "":
             url_type != null
 
-    -- Cannot set status to done or archived via MCP. This restriction
-    -- is enforced at the MCP handler boundary, not in the service layer.
-    -- Rationale: agents manage running work, humans mark completion.
+    -- Archived is still never reachable via this rule, on either path:
+    -- there is no dedicated archive rule alongside MarkTaskDoneViaMcp
+    -- below, only the one for done. Rationale unchanged from the original
+    -- restriction: humans manage archival from the TUI.
     --
-    -- These two guards are the ONLY status constraint on this path, and
-    -- they constrain the TARGET status only — task.status is never read
-    -- to validate the move. This rule is therefore exempt from
+    -- Done is now reachable via MCP, but never through THIS rule — it is
+    -- carved out entirely into MarkTaskDoneViaMcp below, a dedicated
+    -- close-only call (task_id and status="done", nothing else) with its
+    -- own caller guard. `status != done` here means exactly that: this
+    -- generic multi-field rule refuses status="done" unconditionally,
+    -- regardless of what else the call sets, so a call combining
+    -- status="done" with any other field never partially matches here —
+    -- it is rejected by MarkTaskDoneViaMcp's own no-other-fields guard
+    -- instead, with one consistent error message.
+    --
+    -- These two guards constrain the TARGET status only — task.status is
+    -- never read to validate the move. This rule is therefore exempt from
     -- core/Task's status transition graph (see core.allium:
     -- Task.transitions status): any status other than done and archived
     -- is accepted from any current status, with no edge check, including
@@ -134,8 +144,13 @@ rule UpdateTaskViaMcp {
         if auto_run_plan != null: task.auto_run_plan = auto_run_plan
         -- phoenix is a plain nullable boolean: omitted leaves it alone, true
         -- and false set it. What it then does is PhoenixRespawn
-        -- (tasks.allium) — and note this tool cannot set status to done, so
-        -- an agent can arm or disarm the recurrence but never trigger it.
+        -- (tasks.allium) — this rule itself cannot set status to done, so a
+        -- call through THIS rule can only arm or disarm the recurrence, never
+        -- trigger it. MarkTaskDoneViaMcp below is a different matter: it CAN
+        -- reach done (on a task other than the calling agent's own), and
+        -- because it does so via the same close_session TaskService method
+        -- exit_session uses, a phoenix-armed task closed that way respawns —
+        -- see that rule's own guidance.
         if phoenix != null: task.phoenix = phoenix
     ensures: task.updated_at = now
 
@@ -181,9 +196,14 @@ rule UpdateTaskViaMcp {
         -- TaskService::update_task (src/service/tasks/crud.rs), which reads
         -- the pre-write status and consults
         -- sort_order_for_status_transition (src/models/tasks.rs), applying
-        -- the result on top of the patch built from the caller's params. MCP
-        -- is simply one of the callers that can reach it — the one that can
-        -- reach only its clearing half, since it cannot set status = done.
+        -- the result on top of the patch built from the caller's params. THIS
+        -- rule is one of the callers that can reach it — the one that can
+        -- reach only its clearing half, since it cannot set status = done
+        -- itself. Entering-done sort_order (the completion-recency rank) is
+        -- set on the other two callers of TaskService::close_session:
+        -- tasks/ConfirmDone (the TUI path), and MarkTaskDoneViaMcp below (the
+        -- MCP path) — update_task can now enter done, just never through this
+        -- rule's own ensures.
         -- When status or epic_id changes, the parent epic's status is
         -- recalculated (if a parent epic exists). Re-assigning a task
         -- from one epic to another triggers recalculation on both the
@@ -199,6 +219,176 @@ rule UpdateTaskViaMcp {
         -- task belongs to a grouped parent, reroute_on_repo_change is
         -- called to move the task to the correct sub-epic for the new
         -- repo_path.
+}
+
+rule MarkTaskDoneViaMcp {
+    when: McpUpdateTask(task, caller_identity, status?, sub_status?, plan?, title?,
+                        description?, repo_path?, sort_order?, url?, url_type?, tag?,
+                        epic_id?, base_branch?, wrap_up_mode?, auto_run_plan?, phoenix?)
+
+    requires: status = done
+
+    -- A dedicated close-only call: no other field may travel with
+    -- status="done" in the same update_task call — not even one that would
+    -- be a harmless no-op elsewhere. url_type is a case in point: everywhere
+    -- else this tool accepts it, url_type has no effect without a non-empty
+    -- url — it "folds into url" (see UpdateTaskViaMcp's guidance) rather than
+    -- owning a Task field of its own — but sending it alongside status="done"
+    -- is still rejected here, same as any other field. A close-only call
+    -- silently discarding an argument the caller bothered to send is a worse
+    -- failure mode than a slightly stricter guard; a caller wanting both a
+    -- field change and completion makes two calls — one update_task call for
+    -- the field, a separate status-only call to close.
+    requires:
+        sub_status = null and plan = null and title = null and description = null
+        and repo_path = null and sort_order = null and url = null and url_type = null
+        and tag = null and epic_id = null and base_branch = null
+        and wrap_up_mode = omitted and auto_run_plan = null and phoenix = null
+
+    -- A dispatched agent may not close its OWN task through this call — that
+    -- route stays wrap_up + exit_session, with its token, its ordering
+    -- guarantees and its epic chain all in one place (ExitSession,
+    -- pr-workflow.allium). A session caller (a human's own Claude Code
+    -- session, or a script/orchestrator with no dispatched identity of its
+    -- own) may close ANY task this way, including one with a live tmux
+    -- window. A dispatched agent may likewise close any task OTHER than the
+    -- one it is running as — e.g. a triage/orchestrating agent closing
+    -- sibling cards — but never itself.
+    requires:
+        not (caller_identity.kind = task and caller_identity.task_id = task.id)
+
+    -- No requirement on task.status: reachable from any current status
+    -- (backlog, running, review, even done or archived), the same
+    -- no-edge-check philosophy UpdateTaskViaMcp already applies to its own
+    -- target statuses. A task with no live tmux_window (never dispatched, or
+    -- already detached) closes with nothing to tear down.
+
+    -- The terminal write can fail to persist at the storage layer, exactly as
+    -- it can for ExitSession (pr-workflow.allium) — see that rule's
+    -- `close_persisted` discussion for the full rationale, which applies here
+    -- unchanged. Every mutation below, and SessionClosed itself, is gated on
+    -- this SAME write landing: a task whose close does not persist keeps its
+    -- prior status, sub_status, sort_order and any live window untouched,
+    -- and fires no chain.
+    let close_persisted = terminal_close_persisted(task)
+    let window = closed_session_window(task)
+    let had_window = window != null
+    let was_running = task.status = running
+    let was_already_done = task.status = done
+
+    ensures:
+        if close_persisted:
+            task.status = done
+            task.sub_status = core/SubStatus.default_for(done)
+            task.updated_at = now
+            -- Re-closing an already-done task leaves its existing
+            -- completion-recency rank untouched: sort_order_for_status_transition
+            -- treats done -> done as a no-op, the same for every other caller
+            -- of TaskService::close_session. Every OTHER prior status
+            -- (including archived) DOES get the fresh rank.
+            if not was_already_done:
+                task.sort_order = completion_recency_rank(now)
+            -- Mirrors ExitSession's own clear: leaving running voids any
+            -- deferred Stop, so a task closed while running can't carry a
+            -- stale stop_pending into whatever status a later re-open lands
+            -- it in. See core/Task's PendingStopOnlyWhileRunning invariant.
+            if was_running:
+                task.stop_pending = false
+            if had_window:
+                task.tmux_window = null
+                not exists window
+
+    -- Fired on the same terms as ExitSession's SessionClosed: gated on the
+    -- SAME close_persisted write, and it drives the same
+    -- AutoDispatchNextSubtask chain (epics.allium) — a task closed this way
+    -- chains its epic's next backlog subtask exactly as a task closed via
+    -- exit_session would. A close that does not persist emits neither this
+    -- nor any of the mutations above, and fires no chain.
+    ensures:
+        if close_persisted:
+            SessionClosed(task: task)
+
+    @guidance
+        -- The MCP `update_task` tool's dedicated done-only path. Handled by
+        -- handle_update_task (src/mcp/handlers/tasks/crud.rs), which checks
+        -- `status = "done"` FIRST — before the sibling archived check, before
+        -- the url/url_type pairing validation, before any field mapping —
+        -- and branches to a separate function operating on the raw parsed
+        -- arguments, not on the built UpdateTaskParams. That ordering is load
+        -- bearing: checking the field-exclusivity guard against
+        -- UpdateTaskParams instead (which has no slot for a url_type sent
+        -- without a url) would let such a call slip through unrejected, and
+        -- checking it after the url/url_type pairing validation would answer
+        -- a `status="done", url=<x>` call with "url_type is required" instead
+        -- of the close-only error this rule promises.
+        --
+        -- From there, this path reuses the exact tail ExitSessionViaMcp uses:
+        -- TaskService::close_session (the same terminal-write helper, same
+        -- CloseSessionOutcome::Done branch), TaskService::kill_session_window
+        -- for the tmux teardown, and auto_dispatch_next for the chain. The
+        -- shared tail lives once, in a `perform_close` helper
+        -- (src/mcp/handlers/tasks/wrap_up.rs) that both handlers call — this
+        -- is deliberate: a second copy of ExitSession's terminal-write /
+        -- teardown / chain sequence, however small the divergence, is
+        -- exactly the "second path to the terminal write" hazard this whole
+        -- feature exists to avoid re-deriving. Only the request validation
+        -- (the two requires above) and the response text are specific to
+        -- this call; the mechanics, including the close_persisted gate, are
+        -- not.
+        --
+        -- No exit token is issued, checked, or consumed anywhere on this
+        -- path — unlike exit_session, there is no wrap_up call first. That is
+        -- the whole point: it is a distinct, deliberately simpler route to
+        -- Done for a caller who was never going to call wrap_up on this task
+        -- in the first place (a session closing a batch of finished cards, or
+        -- an orchestrating agent closing a sibling task).
+        --
+        -- Validation order (both are ServiceError::Validation, -32602),
+        -- entirely ahead of UpdateTaskViaMcp's own archived/url-pairing
+        -- checks, which never run for a status="done" call:
+        --   1. Any field other than status set alongside status="done"
+        --      (url_type included, even though it is inert everywhere else
+        --      this tool accepts it without an accompanying url — see the
+        --      requires clause above) →
+        --      "status=\"done\" must be the only field set in this call
+        --      (also set: <names>). Update other fields separately, then
+        --      close with a status-only call."
+        --   2. caller_identity is Task(t) and t = the target task_id →
+        --      "Cannot mark your own task done via update_task — call
+        --      wrap_up then exit_session instead."
+        --   3. Unknown task_id → the same NotFound(-32001) every other MCP
+        --      task lookup uses ("Task <id> not found").
+        -- A caller could trip both 1 and 2 at once; 1 is checked first, so
+        -- that error names the field-combination problem regardless of who
+        -- is calling.
+        --
+        -- close_session has no precondition on prior status or on
+        -- tmux_window being present — it is called unconditionally once
+        -- validation passes, so a backlog task with no window closes exactly
+        -- as cleanly as a running task with a live one. It also unconditionally
+        -- applies respawn_phoenix on a persisted Done transition — the same
+        -- PhoenixRespawn (tasks.allium) any other route into Done triggers;
+        -- this path earns that for free by reusing close_session rather than
+        -- re-deriving it.
+        --
+        -- When the terminal write does NOT persist: this call reports the
+        -- task could not be moved to done and invites a retry (worded
+        -- differently from ExitSessionViaMcp's failed-close text, which names
+        -- a live tmux session and says the close needs redoing by hand — this
+        -- path may have no session at all to speak of); any live window is
+        -- left alive (nothing tears it down), and no chain fires — the task
+        -- is exactly as it was before the call. When it DOES persist: the
+        -- window (if any) is killed in the background,
+        -- task/epic-changed notifications fire, and the epic auto-dispatch
+        -- chain runs if the task belongs to an auto_dispatch epic with a
+        -- backlog subtask waiting. The response text names the chained
+        -- subtask when one was dispatched, exactly as exit_session's does.
+        --
+        -- MCP_UPDATABLE (src/models/tasks.rs) now includes Done: the
+        -- schema's advertised status enum is backlog | running | review |
+        -- done. archived remains excluded — UpdateTaskViaMcp's own guard is
+        -- unchanged for it, and there is no equivalent MarkTaskDoneViaMcp for
+        -- archival.
 }
 
 rule PrFinalisationReflectionNudge {

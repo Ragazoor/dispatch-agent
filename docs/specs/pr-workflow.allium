@@ -487,6 +487,13 @@ rule ExitSession {
             SessionClosed(task: task)
 
     @guidance
+        -- Not the only caller of close_session's terminal-write tail
+        -- anymore: MarkTaskDoneViaMcp (mcp-task-tools.allium) — update_task's
+        -- dedicated status="done" path — shares it via the same
+        -- `perform_close` helper (src/mcp/handlers/tasks/wrap_up.rs), so the
+        -- tmux teardown and AutoDispatchNextSubtask chaining described below
+        -- apply there too, minus the exit-token machinery this rule owns.
+        --
         -- Single-call session close. The old two-phase behaviour (first call
         -- returned a reflection prompt and set token.reflected, second call
         -- closed) is gone: the mandatory reflection is now the /retro skill,

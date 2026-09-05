@@ -201,6 +201,87 @@ pub(crate) async fn handle_wrap_up(
     }
 }
 
+/// What applying a [`CloseSessionOutcome`] made of the close, once
+/// [`perform_close`] has taken care of the tmux teardown and the epic
+/// auto-dispatch chain. Callers still shape their own response text from
+/// this — wording differs between `exit_session` (which always had a live
+/// window, per its own precondition) and update_task's dedicated
+/// `status="done"` path (which may not) — but neither re-derives the
+/// mechanics themselves.
+pub(super) enum ClosePathOutcome {
+    /// The terminal write did not persist: the task keeps its prior status
+    /// (and any live window it had); nothing was torn down and no chain fired.
+    NotPersisted,
+    /// The terminal write persisted. `chained` is the subtask `(id, title)`
+    /// the epic auto-dispatch chain started, if the task belonged to an
+    /// `auto_dispatch` epic with a backlog subtask to hand off to.
+    Persisted { chained: Option<(TaskId, String)> },
+}
+
+/// Apply `outcome` via [`TaskService::close_session`], notify, tear down any
+/// live tmux window in the background, and drive the epic auto-dispatch
+/// chain — the tail every route to Done/Review shares once it holds a
+/// validated `(task, outcome)` pair. `task` supplies the epic_id for both the
+/// epic-changed notification and the chain; its own status/window fields are
+/// not read after this point — the close's own return value is authoritative.
+///
+/// Shared by `handle_exit_session` (below) and update_task's dedicated
+/// `status="done"` handler (`MarkTaskDoneViaMcp`, mcp-task-tools.allium) —
+/// see that rule's `@guidance` for why a second copy of this sequence is
+/// exactly the hazard worth avoiding here.
+pub(super) async fn perform_close(
+    state: &McpState,
+    task: &Task,
+    outcome: crate::service::CloseSessionOutcome,
+) -> ClosePathOutcome {
+    let task_id = task.id;
+    let close_result = state.task_svc.close_session(task_id, outcome).await;
+    state.notify_task_changed(task_id);
+    if let Some(epic_id) = task.epic_id {
+        state.notify_epic_changed(epic_id);
+    }
+
+    let closed = match close_result {
+        Ok(closed) => closed,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.0,
+                "perform_close: failed to apply closing patch: {e}"
+            );
+            return ClosePathOutcome::NotPersisted;
+        }
+    };
+
+    // Past this point the close persisted, so both of the following are
+    // unconditional. The window comes from the close itself, not from a
+    // pre-read task: it is the row the close actually cleared.
+    let tmux_window = closed.window;
+    let task_svc = state.task_svc.clone();
+    let bg_done = state.test_hooks.bg_write_done_tx.clone();
+    tokio::spawn(async move {
+        if let Some(window) = tmux_window {
+            task_svc.kill_session_window(window).await;
+        }
+        if let Some(tx) = &bg_done {
+            let _ = tx.send(crate::mcp::BackgroundWrite::KillWindow);
+        }
+    });
+
+    // SessionClosed fires after the terminal patch and the change
+    // notifications, so the next subtask's worktree is cut from a
+    // base_branch that already contains this task's work. The kill-window
+    // teardown above is issued before this point but is detached and never
+    // awaited, so its completion is NOT part of this ordering — the window
+    // may die before or after whatever the chain does. See
+    // AutoDispatchNextSubtask in docs/specs/epics.allium. Never fails the
+    // close: `auto_dispatch_next` swallows every chain problem.
+    let chained = match task.epic_id {
+        Some(epic_id) => super::dispatch::auto_dispatch_next(state, epic_id).await,
+        None => None,
+    };
+    ClosePathOutcome::Persisted { chained }
+}
+
 pub(crate) async fn handle_exit_session(
     state: &McpState,
     id: Option<Value>,
@@ -296,30 +377,19 @@ pub(crate) async fn handle_exit_session(
     // `close_persisted` in `ExitSession` (docs/specs/pr-workflow.allium): the
     // terminal mutation, the tmux teardown and the trailing SessionClosed
     // emission are all gated on this single write landing. Only consuming the
-    // token (already done above) happens either way. `close_session` exists so
-    // that gate is sound — its `Err` means the write did not land and nothing
-    // else. See its doc comment before swapping in a generic `update_task`.
-    let close_result = state.task_svc.close_session(task_id, outcome).await;
-    state.notify_task_changed(task_id);
-    if let Some(epic_id) = task.epic_id {
-        state.notify_epic_changed(epic_id);
-    }
-
-    let closed = match close_result {
-        Ok(closed) => closed,
-        Err(e) => {
-            tracing::warn!(
-                task_id = task_id.0,
-                "exit_session: failed to apply closing patch: {e}"
-            );
+    // token (already done above) happens either way. `perform_close` exists so
+    // that gate is sound — its `NotPersisted` means the write did not land and
+    // nothing else. See its doc comment before re-deriving this sequence.
+    match perform_close(state, &task, outcome).await {
+        ClosePathOutcome::NotPersisted => {
             // Still a successful response: the exit token was consumed above, so
             // an error would strand the agent with no retry path and no session.
             // The text is what carries the failure. Neither the teardown nor the
-            // chain runs — the task keeps its live window and its `tmux_window`
+            // chain ran — the task keeps its live window and its `tmux_window`
             // reference, so it never satisfies `is_detached` and cannot drift
             // into the awaiting-merge rendering, and a broken close is never
             // compounded into a second dispatch.
-            return JsonRpcResponse::ok(
+            JsonRpcResponse::ok(
                 id,
                 json!({"content": [{"type": "text", "text": format!(
                     "Task #{} could NOT be moved to its terminal status — the close did not take \
@@ -327,42 +397,17 @@ pub(crate) async fn handle_exit_session(
                      close: the task is still in its previous status and needs closing by hand.",
                     task_id.0
                 )}]}),
-            );
+            )
         }
-    };
-
-    // Past this point the close persisted, so both of the following are
-    // unconditional. The window comes from the close itself, not from the
-    // pre-read task: it is the row the close actually cleared.
-    let tmux_window = closed.window;
-    let task_svc = state.task_svc.clone();
-    let bg_done = state.test_hooks.bg_write_done_tx.clone();
-    tokio::spawn(async move {
-        if let Some(window) = tmux_window {
-            task_svc.kill_session_window(window).await;
+        ClosePathOutcome::Persisted { chained } => {
+            let text = match chained {
+                Some((next_id, next_title)) => format!(
+                    "Session closed. Dispatching next epic subtask #{} '{next_title}'.",
+                    next_id.0
+                ),
+                None => "Session closed.".to_string(),
+            };
+            JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
         }
-        if let Some(tx) = &bg_done {
-            let _ = tx.send(crate::mcp::BackgroundWrite::KillWindow);
-        }
-    });
-
-    // SessionClosed fires after the terminal patch and the change
-    // notifications, so the next subtask's worktree is cut from a base_branch
-    // that already contains this task's work. The kill-window teardown above is
-    // issued before this point but is detached and never awaited, so its
-    // completion is NOT part of this ordering — the window may die before or
-    // after SessionClosed and whatever the chain does. See
-    // AutoDispatchNextSubtask in docs/specs/epics.allium. Never fails the close:
-    // `auto_dispatch_next` swallows every chain problem.
-    let text = match task.epic_id {
-        Some(epic_id) => match super::dispatch::auto_dispatch_next(state, epic_id).await {
-            Some((next_id, next_title)) => format!(
-                "Session closed. Dispatching next epic subtask #{} '{next_title}'.",
-                next_id.0
-            ),
-            None => "Session closed.".to_string(),
-        },
-        None => "Session closed.".to_string(),
-    };
-    JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
+    }
 }

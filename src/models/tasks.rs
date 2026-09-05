@@ -42,14 +42,21 @@ impl TaskStatus {
         TaskStatus::Archived,
     ];
 
-    /// Statuses settable through the `update_task` MCP tool. Excludes `done`
-    /// and `archived` — enforced by `requires: status != done` / `!=
-    /// archived` in `UpdateTaskViaMcp` (mcp-task-tools.allium), not just
-    /// hidden from the schema: agents manage running work, humans mark
-    /// completion. Kept as its own const (rather than a hand-written schema
-    /// literal) so an MCP schema derived from it can't drift from this list.
-    pub const MCP_UPDATABLE: &'static [TaskStatus] =
-        &[TaskStatus::Backlog, TaskStatus::Running, TaskStatus::Review];
+    /// Statuses settable through the `update_task` MCP tool. Excludes
+    /// `archived` only — enforced by `requires: status != archived` in
+    /// `UpdateTaskViaMcp` (mcp-task-tools.allium), not just hidden from the
+    /// schema: humans manage archival from the TUI. `Done` IS advertised, but
+    /// only reachable through the dedicated close-only path
+    /// (`MarkTaskDoneViaMcp`) — `UpdateTaskViaMcp`'s own `requires: status !=
+    /// done` still refuses it on the generic multi-field rule. Kept as its
+    /// own const (rather than a hand-written schema literal) so an MCP schema
+    /// derived from it can't drift from this list.
+    pub const MCP_UPDATABLE: &'static [TaskStatus] = &[
+        TaskStatus::Backlog,
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Done,
+    ];
 
     /// The board columns that flattened mode never reaches. Kept as its own
     /// const, in the same polarity as `core.allium`'s

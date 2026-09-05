@@ -269,6 +269,141 @@ impl ChainFixture {
     ) -> JsonRpcResponse {
         close_session_via_mcp(&self.state, task_id, action).await
     }
+
+    /// Close `task_id` via `update_task`'s dedicated `status="done"` path
+    /// (MarkTaskDoneViaMcp) instead of wrap_up/exit_session — no exit token,
+    /// called as a Session caller so it may close a task that is not its own.
+    async fn close_via_update_task(&self, task_id: crate::models::TaskId) -> JsonRpcResponse {
+        call(
+            &self.state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id.0, "status": "done" }
+            })),
+        )
+        .await
+    }
+}
+
+// -- automatic epic chaining on update_task(status="done") ------------------
+//
+// MarkTaskDoneViaMcp (mcp-task-tools.allium) reuses exit_session's own
+// close_session / kill_session_window / auto_dispatch_next tail (the
+// `perform_close` helper in wrap_up.rs), so the same chain and teardown
+// guarantees exercised above for exit_session must hold here too — these are
+// the parity checks, not a full re-derivation of every exit_session chain
+// test.
+
+/// Closing via update_task(status="done") dispatches the epic's next backlog
+/// subtask, the same as closing via exit_session — parity with
+/// `exit_session_dispatches_first_backlog_subtask`.
+#[tokio::test]
+async fn update_task_done_dispatches_first_backlog_subtask() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let first = fx
+        .backlog_subtask(Some(epic_id), "Task 1", Some(10), None)
+        .await;
+
+    let resp = fx.close_via_update_task(closing).await;
+    assert!(resp.error.is_none(), "close must succeed: {:?}", resp.error);
+
+    wait_for_task_changed(&mut fx.notify_rx, first).await;
+
+    let dispatched = fx.db.get_task(first).await.unwrap().unwrap();
+    assert_eq!(dispatched.status, TaskStatus::Running);
+    assert!(dispatched.worktree.is_some());
+    assert!(dispatched.tmux_window.is_some());
+}
+
+/// The chained subtask is named in the response, worded for the update_task
+/// close path rather than exit_session's "Session closed." — parity with
+/// `exit_session_response_names_the_chained_subtask`.
+#[tokio::test]
+async fn update_task_done_response_names_the_chained_subtask() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Wire up the widget", Some(10), None)
+        .await;
+
+    let resp = fx.close_via_update_task(closing).await;
+    let text = extract_response_text(&resp);
+    assert_eq!(
+        text,
+        format!(
+            "Task #{} marked done. Dispatching next epic subtask #{} 'Wire up the widget'.",
+            closing.0, next.0
+        ),
+    );
+
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+}
+
+/// Closing a task with a live tmux window via update_task(status="done")
+/// tears the window down, the same as exit_session does — parity with
+/// `exit_session_successful_close_kills_the_tmux_window`. Uses
+/// `ChainFixture::with_bg_done` to await the detached teardown
+/// deterministically instead of sleeping — see the "No `tokio::time::sleep`
+/// in tests" section of `docs/conventions.md`.
+#[tokio::test]
+async fn update_task_done_kills_the_tmux_window() {
+    let mut fx = ChainFixture::with_bg_done().await;
+    let closing = fx.closing_subtask(None).await;
+
+    let resp = fx.close_via_update_task(closing).await;
+    assert!(resp.error.is_none(), "close must succeed: {:?}", resp.error);
+
+    fx.wait_for_kill_window_done().await;
+
+    assert!(
+        !fx.kill_window_calls().is_empty(),
+        "expected a tmux kill-window call"
+    );
+    assert!(fx
+        .db
+        .get_task(closing)
+        .await
+        .unwrap()
+        .unwrap()
+        .tmux_window
+        .is_none());
+}
+
+/// A terminal write that does not persist must leave the task exactly as it
+/// was — no status change, no cleared window, no chain — the same guarantee
+/// `exit_session_failed_close_leaves_the_task_unchanged` asserts for the
+/// exit_session path, since both now share `perform_close`.
+#[tokio::test]
+async fn update_task_done_failed_close_leaves_the_task_unchanged() {
+    let fx = ChainFixture::with_failing_close().await;
+    let closing = fx.closing_subtask(None).await;
+    let before = fx.db.get_task(closing).await.unwrap().unwrap();
+
+    let resp = fx.close_via_update_task(closing).await;
+    assert!(resp.error.is_none(), "still a successful response");
+    assert!(
+        extract_response_text(&resp).contains("could NOT be moved to done"),
+        "response must not claim success: {}",
+        extract_response_text(&resp)
+    );
+
+    let after = fx.db.get_task(closing).await.unwrap().unwrap();
+    assert_eq!(
+        after.status, before.status,
+        "a close that did not persist must not move the task"
+    );
+    assert_eq!(
+        after.tmux_window, before.tmux_window,
+        "the task's record of its window is only cleared when the write lands"
+    );
+    assert!(
+        fx.kill_window_calls().is_empty(),
+        "a failed close must issue no tmux kill-window"
+    );
 }
 
 // allow-phantom-symbol: renamed test, cited for provenance

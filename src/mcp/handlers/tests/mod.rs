@@ -552,9 +552,10 @@ fn wrap_up_action_all_has_every_variant() {
 
 /// `update_task.status` and `update_task.sub_status` are the two schema
 /// fields that deliberately advertise a SUBSET of their backing enum
-/// (status excludes `done`/`archived`; sub_status excludes the
-/// system-derived `stale_shell` and `pr_closed`) rather than the full
-/// `::ALL`. Each subset
+/// (status excludes `archived` — `done` is advertised, but only reachable
+/// through the dedicated close-only path, MarkTaskDoneViaMcp; sub_status
+/// excludes the system-derived `stale_shell` and `pr_closed`) rather than the
+/// full `::ALL`. Each subset
 /// is its own named const — `TaskStatus::MCP_UPDATABLE` /
 /// `SubStatus::MCP_ADVERTISED` — derived in the schema exactly like every
 /// full-set field, so a variant silently missing from either (not just a
@@ -562,7 +563,7 @@ fn wrap_up_action_all_has_every_variant() {
 /// advertised.
 #[test]
 fn subset_enum_consts_have_every_intended_variant() {
-    assert_eq!(TaskStatus::MCP_UPDATABLE.len(), 3);
+    assert_eq!(TaskStatus::MCP_UPDATABLE.len(), 4);
     assert_eq!(SubStatus::MCP_ADVERTISED.len(), 9);
 }
 
