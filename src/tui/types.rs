@@ -462,8 +462,22 @@ pub struct PrPollState {
     /// Transient-failure backoff deadline. `None` means "eligible on the next
     /// tick that clears `PR_POLL_INTERVAL`", the unthrottled default.
     pub next_poll_at: Option<Instant>,
-    /// Polling has stopped for this task for the rest of the session.
-    pub gave_up: bool,
+}
+
+impl PrPollState {
+    /// Whether polling has stopped for this task for the rest of the session.
+    ///
+    /// Derived rather than stored: it is always exactly
+    /// `consecutive_permanent_failures >= PR_POLL_PERMANENT_FAILURE_THRESHOLD`,
+    /// the only two places that touch either one (`clear_pr_poll_failures` and
+    /// the permanent-failure branch of `handle_pr_check_failed`) already keep
+    /// them in lockstep by hand. A stored bool alongside the counter it
+    /// mirrors can only ever drift from it or duplicate it — and did let a
+    /// test construct a `PrPollState` with `gave_up: true` but a zero counter,
+    /// a state that should be unrepresentable.
+    pub fn gave_up(&self) -> bool {
+        self.consecutive_permanent_failures >= crate::tui::PR_POLL_PERMANENT_FAILURE_THRESHOLD
+    }
 }
 
 // ---------------------------------------------------------------------------

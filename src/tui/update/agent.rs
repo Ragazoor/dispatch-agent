@@ -365,6 +365,12 @@ impl App {
     /// Poll PR status for review tasks with open PRs, throttled per task by
     /// `PR_POLL_INTERVAL`. Records the poll timestamp for each task queried.
     fn tick_pr_poll(&mut self) -> Vec<Command> {
+        // Captured once rather than calling `Instant::now()` per task in the
+        // filter below: every review task's deadline check in this tick can
+        // share one timestamp — a few microseconds of skew across tasks in the
+        // same tick is immaterial against a 30s-scale backoff — so one syscall
+        // serves the whole tick instead of one per candidate task.
+        let now = Instant::now();
         let pr_tasks: Vec<(TaskId, String)> = self
             .board
             .tasks
@@ -383,10 +389,7 @@ impl App {
             // always eligible. See PollPrStatus in pr-workflow.allium.
             .filter(|t| {
                 self.agents.pr_poll.get(&t.id).is_none_or(|poll| {
-                    !poll.gave_up
-                        && poll
-                            .next_poll_at
-                            .is_none_or(|deadline| Instant::now() >= deadline)
+                    !poll.gave_up() && poll.next_poll_at.is_none_or(|deadline| now >= deadline)
                 })
             })
             .filter_map(|t| {

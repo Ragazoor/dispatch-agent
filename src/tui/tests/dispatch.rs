@@ -2536,7 +2536,11 @@ fn polled_ids(cmds: &[Command]) -> Vec<TaskId> {
 #[test]
 fn pr_polling_skips_a_task_it_gave_up_on() {
     let mut app = App::new(vec![review_task_with_pr(1)]);
-    app.agents.pr_poll.entry(TaskId(1)).or_default().gave_up = true;
+    app.agents
+        .pr_poll
+        .entry(TaskId(1))
+        .or_default()
+        .consecutive_permanent_failures = crate::tui::PR_POLL_PERMANENT_FAILURE_THRESHOLD;
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
 
@@ -2594,7 +2598,7 @@ fn a_permanent_failure_below_the_threshold_does_not_give_up() {
 
     let state = app.agents.pr_poll.get(&TaskId(1)).expect("state recorded");
     assert_eq!(state.consecutive_permanent_failures, 1);
-    assert!(!state.gave_up, "one failure must not give up");
+    assert!(!state.gave_up(), "one failure must not give up");
     assert_eq!(
         app.find_task(TaskId(1)).unwrap().sub_status,
         SubStatus::AwaitingReview,
@@ -2617,7 +2621,7 @@ fn the_threshold_permanent_failure_gives_up_and_marks_pr_unreachable() {
     }
 
     let state = app.agents.pr_poll.get(&TaskId(1)).expect("state recorded");
-    assert!(state.gave_up, "the threshold failure must give up");
+    assert!(state.gave_up(), "the threshold failure must give up");
     assert_eq!(
         app.find_task(TaskId(1)).unwrap().sub_status,
         SubStatus::PrUnreachable,
@@ -2651,7 +2655,7 @@ fn transient_failures_never_accumulate_towards_giving_up() {
         state.consecutive_permanent_failures, 0,
         "transient failures must not touch the permanent counter"
     );
-    assert!(!state.gave_up, "transient failures must never give up");
+    assert!(!state.gave_up(), "transient failures must never give up");
     assert!(
         state.next_poll_at.is_some(),
         "a transient failure must set a backoff deadline"
@@ -2691,7 +2695,6 @@ fn successive_transient_failures_widen_the_backoff() {
 fn a_successful_poll_clears_give_up_state() {
     let mut app = App::new(vec![review_task_with_pr(1)]);
     let state = app.agents.pr_poll.entry(TaskId(1)).or_default();
-    state.gave_up = true;
     state.consecutive_permanent_failures = 9;
     state.next_poll_at = Some(Instant::now() + Duration::from_secs(600));
 
@@ -2701,7 +2704,7 @@ fn a_successful_poll_clears_give_up_state() {
     }));
 
     let state = app.agents.pr_poll.get(&TaskId(1)).expect("state kept");
-    assert!(!state.gave_up, "a successful poll must clear the give-up");
+    assert!(!state.gave_up(), "a successful poll must clear the give-up");
     assert_eq!(state.consecutive_permanent_failures, 0);
     assert!(state.next_poll_at.is_none(), "backoff must be cleared");
 }

@@ -169,12 +169,14 @@ impl App {
             );
             return vec![];
         }
-        if state.gave_up {
-            // Already given up; polling is gated, so this is a late in-flight
-            // result. Nothing to say twice.
+        // `gave_up` is derived from this same counter (see PrPollState::gave_up),
+        // so the only way to tell "just now crossed the threshold" from "already
+        // given up, this is a late in-flight result" is the exact value: the
+        // counter increments by one per permanent failure, so it passes through
+        // the threshold exactly once.
+        if state.consecutive_permanent_failures > PR_POLL_PERMANENT_FAILURE_THRESHOLD {
             return vec![];
         }
-        state.gave_up = true;
 
         tracing::warn!(
             task_id = id.0,

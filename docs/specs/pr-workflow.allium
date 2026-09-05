@@ -93,7 +93,6 @@ rule PollPrStatus {
                     poll.consecutive_permanent_failures = 0
                     poll.consecutive_transient_failures = 0
                     poll.next_poll_at = null
-                    poll.gave_up = false
                 if outcome.state = merged:
                     PrMerged(task: task)
                 else if outcome.state = closed:
@@ -120,8 +119,7 @@ rule PollPrStatus {
                         task: task,
                         consecutive_permanent_failures: failures,
                         consecutive_transient_failures: 0,
-                        next_poll_at: null,
-                        gave_up: false
+                        next_poll_at: null
                     )
                 if failures >= core/config.pr_poll_permanent_failure_threshold:
                     task.sub_status = core/SubStatus.pr_unreachable
@@ -145,8 +143,7 @@ rule PollPrStatus {
                         task: task,
                         consecutive_permanent_failures: 0,
                         consecutive_transient_failures: 1,
-                        next_poll_at: deadline,
-                        gave_up: false
+                        next_poll_at: deadline
                     )
 
     @guidance
@@ -196,10 +193,10 @@ rule PrPollGaveUp {
 
     requires: task.status = review
 
-    ensures:
-        let poll = core/PrPollState{task}
-        if exists poll:
-            poll.gave_up = true
+    -- Nothing to write to PrPollState here: by the time this fires,
+    -- PollPrStatus has already raised consecutive_permanent_failures past the
+    -- threshold, and gave_up is derived from that counter — so it is already
+    -- true. This rule's only remaining obligation is telling the user.
     ensures: UserInformed(about: pr_unreachable, task: task)
 
     @guidance
@@ -210,8 +207,7 @@ rule PrPollGaveUp {
         -- attempt, so five unreadable PRs produced 63,000 identical lines.
         --
         -- Splitting this out of PollPrStatus mirrors PrMerged and PrClosed: the
-        -- poll rule detects, a named rule reacts. It also keeps `gave_up` written
-        -- in exactly one place.
+        -- poll rule detects, a named rule reacts.
         --
         -- Unlike PrMerged and PrClosed there is no distinct message carrying
         -- this event in the implementation — the counting rule and this one are

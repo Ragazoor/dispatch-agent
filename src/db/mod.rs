@@ -1061,25 +1061,31 @@ impl Database {
         F: FnOnce(&mut Connection) -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        // The closure reports its own runtime through this cell rather than in
-        // its return value, so the measurement survives the error path too — an
-        // Err carries no room for a duration alongside it.
-        let execute_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let reporter = execute_ms.clone();
-
+        // `f`'s own success or failure travels inside the tuple this closure
+        // always returns `Ok(...)` with, rather than being boxed into
+        // `tokio_rusqlite::Error` the way it was before this timing split was
+        // added. The dispatch()-level `Err` this leaves is then only a genuine
+        // connection failure (the actor died), which every caller already
+        // handled via `unwrap_anyhow`'s fallback arm. This is what lets
+        // execute_ms travel out alongside a fallible `f` with no shared
+        // ownership at all: no `Arc`, no atomic, no allocation on the common
+        // (success, fast) path — ownership of `(Result<R>, u64)` just moves
+        // back through the oneshot channel `call` already uses.
         let start = std::time::Instant::now();
-        let result = conn
+        let dispatched = conn
             .call(move |c| {
                 let began = std::time::Instant::now();
-                let out = f(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))));
-                reporter.store(
-                    began.elapsed().as_millis() as u64,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                out
+                let out = f(c);
+                Ok((out, began.elapsed().as_millis() as u64))
             })
             .await;
         let elapsed = start.elapsed();
+
+        let (result, execute_ms) = match dispatched {
+            Ok((out, execute_ms)) => (out, execute_ms),
+            Err(e) => (Err(unwrap_anyhow(e)), 0),
+        };
+
         if elapsed > threshold {
             // Splitting the total is what makes the line diagnostic. High
             // queued_ms with low execute_ms means contention and `location` is
@@ -1088,7 +1094,6 @@ impl Database {
             // the victim — see DbCallSlowWarning in
             // docs/specs/observability.allium.
             let total_ms = elapsed.as_millis() as u64;
-            let execute_ms = execute_ms.load(std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 duration_ms = total_ms,
                 queued_ms = total_ms.saturating_sub(execute_ms),
@@ -1097,7 +1102,7 @@ impl Database {
                 "slow db_call"
             );
         }
-        result.map_err(unwrap_anyhow)
+        result
     }
 
     /// Run a synchronous closure against the writer connection from an async

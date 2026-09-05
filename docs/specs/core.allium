@@ -738,7 +738,12 @@ entity PrPollState {
     -- threshold.
     consecutive_transient_failures: Integer = 0
     next_poll_at: Timestamp?
-    gave_up: Boolean = false
+
+    -- Derived, not stored: a field that merely mirrors the counter it is
+    -- computed from can only drift from it or duplicate it. Also means
+    -- "reset the counter to 0" and "clear gave_up" cannot fall out of step —
+    -- there is only one write to make.
+    gave_up: consecutive_permanent_failures >= core/config.pr_poll_permanent_failure_threshold
 
     @guidance
         -- Conceptually one exists per polled task; the fields' defaults are the
@@ -746,7 +751,7 @@ entity PrPollState {
         -- as zero failures, no backoff and not given up.
         --
         -- gave_up is the in-memory gate that stops polling. Task.sub_status =
-        -- pr_unreachable is its persisted, user-visible shadow: the two are set
+        -- pr_unreachable is its persisted, user-visible shadow: the two change
         -- together, but only sub_status survives a restart.
         --
         -- Because this state is session-scoped, an app restart polls a
