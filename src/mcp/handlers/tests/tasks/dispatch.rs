@@ -1413,6 +1413,53 @@ async fn dispatch_task_dispatches_backlog_task() {
     );
 }
 
+/// rule-guidance.DispatchTaskViaMcp ("The success text names which provisioning
+/// path ran"): the reuse path must SAY it reused.
+///
+/// `ChainFixture::backlog_subtask` pre-creates the worktree directory, which is
+/// what puts provisioning on the reuse branch.
+#[tokio::test]
+async fn dispatch_task_success_text_names_a_reused_worktree() {
+    let fx = ChainFixture::with_runner(dispatch_runner_script()).await;
+    let task_id = fx.backlog_subtask(None, "Crashed Task", None, None).await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
+
+    let text = extract_response_text(&resp);
+    assert!(
+        text.contains("reused existing worktree"),
+        "a reused worktree must be named as reused, got: {text}"
+    );
+}
+
+/// The other half of the same guidance. A full fresh-path dispatch cannot be
+/// driven end-to-end here — mocked git never creates the worktree directory, so
+/// the `.claude-prompt` write fails and the dispatch rolls back — so the wording
+/// is asserted on the formatter that owns it, with the fresh path's own
+/// `reused_worktree = false` supplied directly. That the flag itself is set
+/// correctly on both paths is covered by
+/// `provision_worktree_reports_reused_worktree_false_when_dir_missing` and its
+/// true-side twin in `src/dispatch/tests.rs`.
+#[test]
+fn dispatch_task_success_text_names_a_created_worktree() {
+    let text = crate::mcp::handlers::tasks::dispatch::dispatched_text(
+        crate::models::TaskId(7),
+        &crate::models::DispatchResult {
+            worktree_path: "/repo/.worktrees/7-thing".to_string(),
+            tmux_window: test_tmux_window("task-7"),
+            reused_worktree: false,
+        },
+    );
+    assert!(
+        text.contains("created worktree"),
+        "a freshly provisioned worktree must be named as created, got: {text}"
+    );
+    assert!(
+        !text.contains("reused"),
+        "the fresh path must not claim a reuse, got: {text}"
+    );
+}
+
 /// Drain `rx` and report whether an `AgentLaunched` naming `repo_path` is among
 /// the events already queued. Non-blocking: every emitter below has finished its
 /// notifications by the time the caller awaits it.

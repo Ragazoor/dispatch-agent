@@ -820,6 +820,15 @@ define_str_enum!(WrapUpMode, "wrap-up mode" {
 pub struct DispatchResult {
     pub worktree_path: String,
     pub tmux_window: TmuxWindow,
+    /// Whether `worktree_path` already existed and was reused, rather than
+    /// being created by this dispatch.
+    ///
+    /// Only provisioning can answer this — it measures the directory before
+    /// acting, and afterwards the directory exists either way — so the answer
+    /// is carried here rather than re-derived downstream. See
+    /// rule-guidance.DispatchTaskViaMcp in docs/specs/mcp-task-tools.allium
+    /// for why a caller is told.
+    pub reused_worktree: bool,
 }
 
 // ---------------------------------------------------------------------------

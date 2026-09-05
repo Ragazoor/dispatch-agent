@@ -60,7 +60,7 @@ mcp_args! {
     #[serde(default)]
     optional status: Option<TaskStatus> = [set(status)] {
         "type": "string",
-        "description": "New status: backlog, running, review, or done. status=\"done\" is a dedicated close call: no other field may be set in the same call, and a dispatched agent cannot use it to close its own task (call wrap_up then exit_session for that instead). Archived is not allowed via MCP — ask the human operator to archive from the TUI.",
+        "description": "New status: backlog, running, review, or done. status=\"done\" is a dedicated close call: no other field may be set in the same call, and a dispatched agent cannot use it to close its own task (call wrap_up then exit_session for that instead). Archived is not allowed via MCP — ask the human operator to archive from the TUI. Moving a crashed task back to backlog is the first half of resuming it: a following dispatch_task reuses its existing worktree rather than creating a fresh one, so its branch, commits and uncommitted changes survive.",
         "enum": crate::models::TaskStatus::MCP_UPDATABLE.iter().map(|s| s.as_str()).collect::<Vec<_>>()
     };
 

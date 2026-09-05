@@ -292,7 +292,15 @@ the resulting URL to exit_session (not to wrap_up).",
         };
 
     async "dispatch_task" => tasks::handle_dispatch_task,
-        "Dispatch a backlog task by ID. Creates a worktree from the task's base branch and launches a tmux session. Waits for the dispatch to complete and returns success with worktree path and tmux window, or an error if the task is not in backlog status or the dispatch fails.",
+        "Dispatch a backlog task by ID, then launch an agent in a tmux session. If the task has \
+no worktree directory yet, one is CREATED — from the task's base branch, or from the PR's head \
+branch for a review task carrying a PR url. If it already exists it is \
+REUSED as-is — its branch, its commits and its uncommitted changes are all still there, and the \
+agent starts in them. So a crashed or stalled task is resumed in place: set it back to backlog \
+with update_task, then dispatch_task it. Tell the resumed agent in the task what its worktree \
+already holds — it is a new agent and has none of the previous session's context. Waits for the \
+dispatch to complete; the success text says whether the worktree was created or reused, and names \
+it along with the tmux window. Errors if the task is not in backlog status or the dispatch fails.",
         {
             "type": "object",
             "properties": {

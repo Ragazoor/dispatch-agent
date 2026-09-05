@@ -507,6 +507,7 @@ mod run_blocking_dispatch {
             Ok(models::DispatchResult {
                 worktree_path: "/wt".into(),
                 tmux_window: test_tmux_window("win"),
+                reused_worktree: false,
             })
         });
 

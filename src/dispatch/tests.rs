@@ -1247,6 +1247,24 @@ fn dispatch_prompt_includes_fetch_warning_when_fetch_fails() {
     );
 }
 
+/// The reuse fact provisioning establishes has to survive the trip back to the
+/// caller: `dispatch_task`'s success text reads it off this result — see
+/// rule-guidance.DispatchTaskViaMcp in docs/specs/mcp-task-tools.allium.
+#[test]
+fn dispatch_agent_carries_the_reuse_flag_into_its_result() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = DispatchScript::dispatch().runner();
+
+    let task = make_task(&repo_path);
+    let result = dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    assert!(
+        result.reused_worktree,
+        "a dispatch into a pre-existing worktree directory must report the reuse"
+    );
+}
+
 #[test]
 fn dispatch_prompt_has_no_warning_when_fetch_succeeds() {
     // Pre-create the worktree dir — see comment in the sibling test above.

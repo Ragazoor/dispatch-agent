@@ -204,6 +204,13 @@ rule UpdateTaskViaMcp {
         -- tasks/ConfirmDone (the TUI path), and MarkTaskDoneViaMcp below (the
         -- MCP path) — update_task can now enter done, just never through this
         -- rule's own ensures.
+        -- The `status` argument's own description carries one fact this rule
+        -- does not own: moving a task back to backlog is the first half of
+        -- resuming it, because a following dispatch reuses the worktree
+        -- directory it still has. The reason it is stated here rather than
+        -- only next to dispatch_task is that backlog is where a caller meets
+        -- the recovery move — see DispatchTaskViaMcp's guidance below, which
+        -- owns the behaviour.
         -- When status or epic_id changes, the parent epic's status is
         -- recalculated (if a parent epic exists). Re-assigning a task
         -- from one epic to another triggers recalculation on both the
@@ -694,6 +701,53 @@ rule DispatchTaskViaMcp {
         -- returned immediately and the claim this call won is released, so the
         -- task is left in backlog status exactly as it was before the call. A call
         -- that never won the claim releases nothing.
+        --
+        -- == The success text names which provisioning path ran ==
+        -- Provisioning has two paths (DispatchTask in dispatch.allium): a
+        -- worktree directory that does not exist yet is CREATED by branching
+        -- from a resolved start point, and one that already exists is REUSED —
+        -- `git worktree add` is skipped, so the directory keeps its branch, its
+        -- commits and its uncommitted changes, and the agent starts in them.
+        -- Which ref the fresh path branches from is dispatch.allium's
+        -- start-point table's business, not this rule's: it is usually the
+        -- task's base branch, but a review task carrying a PR url branches from
+        -- the PR's head instead, and an origin that has no such ref falls back
+        -- to the local branch. What matters here is only that one path branches
+        -- and the other does not.
+        --
+        -- The success text says which of the two happened, naming the worktree
+        -- either as created or as reused. This is not decoration. It is the
+        -- only place a caller learns, from the call itself, that a re-dispatch
+        -- did not throw the previous session's work away — and a caller who is
+        -- told cannot mistake a resume for a fresh start. Reporting one wording
+        -- for both paths would leave the caller to infer the difference from
+        -- the tool description, which is exactly the inference that was
+        -- measured going wrong: an orchestrating agent read "creates a
+        -- worktree", concluded that nine crashed tasks' unlanded commits and
+        -- dirty trees were unreachable, and wrote cherry-pick-and-`git apply`
+        -- salvage tasks for work that a plain re-dispatch would have resumed
+        -- in place.
+        --
+        -- The distinction is drawn where provisioning already establishes it,
+        -- and is reported rather than re-derived. Only provisioning can tell
+        -- the two apart: it measures the directory BEFORE acting, and by the
+        -- time the dispatch has returned the directory exists either way, so a
+        -- later look at it answers a different question.
+        --
+        -- == The tool description advertises both paths and the recovery move ==
+        -- The description a caller reads before calling states both paths, that
+        -- a reused worktree keeps its branch, commits and uncommitted changes,
+        -- and the move those two facts add up to: a crashed or stalled task is
+        -- resumed in place by setting it back to backlog with update_task and
+        -- dispatching it again. It also tells the caller to say in the task
+        -- what the worktree already holds, because the resumed agent is a new
+        -- agent and carries none of the crashed session's context.
+        --
+        -- update_task's own `status` argument carries the same fact where a
+        -- caller meets it — the backlog value is the first half of the recovery
+        -- move, and a description that lists the statuses without saying what
+        -- dispatching from backlog does to an existing worktree sends the
+        -- reader back to guessing.
 }
 
 -- Inter-agent messaging no longer has a dispatch MCP tool. It was

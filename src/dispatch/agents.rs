@@ -470,6 +470,7 @@ fn dispatch_with_prompt(
     Ok(DispatchResult {
         worktree_path: provision.worktree_path,
         tmux_window: provision.tmux_window,
+        reused_worktree: provision.reused_worktree,
     })
 }
 

@@ -542,6 +542,54 @@ async fn tool_schemas_have_consistent_required_fields() {
     }
 }
 
+/// The tool `name` as `tools/list` advertises it.
+fn tool_def(name: &str) -> Value {
+    tool_definitions()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == name)
+        .unwrap_or_else(|| panic!("{name} must be advertised"))
+        .clone()
+}
+
+/// The description of `name` as `tools/list` advertises it.
+fn tool_description(name: &str) -> String {
+    tool_def(name)["description"].as_str().unwrap().to_string()
+}
+
+/// rule-guidance.DispatchTaskViaMcp ("The tool description advertises both paths
+/// and the recovery move"). Asserted on substrings rather than the whole string
+/// so the prose can be reworded, but the load-bearing facts cannot quietly go
+/// missing: that an existing worktree is REUSED, that its uncommitted changes
+/// survive, and that the way back into a crashed task is update_task to backlog
+/// then dispatch_task again.
+#[test]
+fn dispatch_task_description_advertises_worktree_reuse_and_the_recovery_move() {
+    let desc = tool_description("dispatch_task");
+    for needle in ["reused", "uncommitted", "update_task", "backlog"] {
+        assert!(
+            desc.contains(needle),
+            "dispatch_task description must mention '{needle}', got: {desc}"
+        );
+    }
+}
+
+/// The same guidance's last paragraph: `update_task`'s own `status` argument is
+/// where a caller meets `backlog`, so it carries the reuse fact too rather than
+/// listing the statuses and leaving the reader to guess.
+#[test]
+fn update_task_status_description_says_what_dispatching_from_backlog_reuses() {
+    let update = tool_def("update_task");
+    let status = update["inputSchema"]["properties"]["status"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        status.contains("reuse") || status.contains("reused"),
+        "update_task.status must say that dispatching from backlog reuses an existing worktree, got: {status}"
+    );
+}
+
 /// `WrapUpAction::ALL` backs the wrap_up/exit_session MCP schema's action
 /// enum (dispatch.rs) — a variant added there without updating `ALL` would
 /// silently under-advertise it.

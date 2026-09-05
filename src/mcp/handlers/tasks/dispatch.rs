@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::dispatch;
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::{DispatchMode, EpicId, TaskId};
+use crate::models::{DispatchMode, DispatchResult, EpicId, TaskId};
 
 use super::{
     parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse, INTERNAL_ERROR,
@@ -184,10 +184,7 @@ pub(crate) async fn handle_dispatch_task(
             }
             JsonRpcResponse::ok(
                 id,
-                json!({"content": [{"type": "text", "text": format!(
-                    "dispatched task #{} — worktree: {}, tmux: {}",
-                    task_id.0, dr.worktree_path, dr.tmux_window
-                )}]}),
+                json!({"content": [{"type": "text", "text": dispatched_text(task_id, &dr)}]}),
             )
         }
         DispatchOutcome::ClaimLost => not_in_backlog_response(state, id, task_id).await,
@@ -196,6 +193,23 @@ pub(crate) async fn handle_dispatch_task(
             JsonRpcResponse::err(id, INTERNAL_ERROR, format!("dispatch failed: {reason}"))
         }
     }
+}
+
+/// The success text `dispatch_task` returns.
+///
+/// Names which provisioning path ran — created or reused — rather than one
+/// wording for both. See rule-guidance.DispatchTaskViaMcp in
+/// docs/specs/mcp-task-tools.allium for why the caller is told.
+pub(in crate::mcp::handlers) fn dispatched_text(task_id: TaskId, dr: &DispatchResult) -> String {
+    let provisioning = if dr.reused_worktree {
+        "reused existing worktree"
+    } else {
+        "created worktree"
+    };
+    format!(
+        "dispatched task #{} — {provisioning}: {}, tmux: {}",
+        task_id.0, dr.worktree_path, dr.tmux_window
+    )
 }
 
 /// The error for a `dispatch_task` whose claim was lost.
