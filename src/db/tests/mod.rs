@@ -3,6 +3,7 @@ use super::*;
 
 mod async_handle;
 mod epics;
+mod hooks;
 mod learnings;
 mod migrations;
 mod read_pool;

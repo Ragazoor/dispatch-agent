@@ -1214,6 +1214,60 @@ impl NotificationBehavior {
     }
 }
 
+/// The write a `Notification` hook must apply, resolved from the notification
+/// kind alone.
+///
+/// Deliberately a *description* of the write rather than a decision already
+/// taken: [`RaiseIfNoOwnWorkLive`](Self::RaiseIfNoOwnWorkLive) carries its
+/// condition down into the statement that applies it, so the live-work counts
+/// are evaluated against the row's committed state rather than a snapshot read
+/// beforehand. Every Claude Code hook runs as its own OS process, so a count
+/// read before the write can already be stale by the time the write lands —
+/// the same argument `try_record_stop` makes for the identical two counters.
+/// See `HookNotification` in `docs/specs/agent-health.allium`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationWrite {
+    /// Raise to `needs_input` and stamp `last_notification_at`. The agent is
+    /// blocked on a human whatever else it has running.
+    Raise,
+    /// Raise, but only while the task has no live shells and no live subagents.
+    ///
+    /// An agent that backgrounds a shell (or dispatches a subagent) ends its
+    /// turn while that work keeps running — `try_record_stop` defers the flip
+    /// to Review for exactly that reason — and Claude Code, seeing a session
+    /// that stopped producing output, fires `Notification(idle_prompt)` about a
+    /// minute later. Nothing is waiting on a human there, so raising
+    /// `needs_input` would report a block that does not exist.
+    ///
+    /// Declining to stamp `last_notification_at` is the load-bearing half, not
+    /// an incidental one: [`classify_agent_activity`] reads only timestamps, so
+    /// a stamp newer than `last_pre_tool_use_at` re-pins `needs_input` on every
+    /// tick until the next PreToolUse.
+    RaiseIfNoOwnWorkLive,
+    /// Return to the running default and drop `last_notification_at`.
+    Clear,
+    /// Write nothing at all.
+    Ignore,
+}
+
+impl NotificationWrite {
+    /// `idle_prompt` is the one kind whose raise is conditional.
+    /// `permission_prompt` and `elicitation_dialog` are never demoted — a
+    /// permission decision or a question dialog genuinely needs a human while
+    /// background work churns — and neither is an absent kind, which may be a
+    /// permission prompt from an older Claude Code.
+    pub fn from_kind(kind: Option<NotificationKind>) -> Self {
+        match NotificationBehavior::from_kind(kind) {
+            NotificationBehavior::Raise if kind == Some(NotificationKind::IdlePrompt) => {
+                Self::RaiseIfNoOwnWorkLive
+            }
+            NotificationBehavior::Raise => Self::Raise,
+            NotificationBehavior::Clear => Self::Clear,
+            NotificationBehavior::Ignore => Self::Ignore,
+        }
+    }
+}
+
 /// Time without a PreToolUse event before a running agent is considered Stale.
 pub const ACTIVE_THRESHOLD: chrono::Duration = chrono::Duration::minutes(10);
 
@@ -1518,35 +1572,41 @@ mod notification_kind_tests {
     }
 
     #[test]
-    fn notification_kind_behavior_classification() {
+    fn notification_write_makes_only_idle_prompt_conditional() {
+        assert_eq!(
+            NotificationWrite::from_kind(Some(NotificationKind::IdlePrompt)),
+            NotificationWrite::RaiseIfNoOwnWorkLive
+        );
+        // A permission decision or a question dialog needs a human even while
+        // background work churns — and an absent kind may be either.
         for kind in [
-            NotificationKind::PermissionPrompt,
-            NotificationKind::IdlePrompt,
-            NotificationKind::ElicitationDialog,
+            None,
+            Some(NotificationKind::PermissionPrompt),
+            Some(NotificationKind::ElicitationDialog),
         ] {
-            assert_eq!(kind.behavior(), NotificationBehavior::Raise);
+            assert_eq!(
+                NotificationWrite::from_kind(kind),
+                NotificationWrite::Raise,
+                "kind {kind:?}"
+            );
         }
+    }
+
+    #[test]
+    fn notification_write_carries_the_clear_and_ignore_buckets_through() {
         for kind in [
             NotificationKind::ElicitationComplete,
             NotificationKind::ElicitationResponse,
         ] {
-            assert_eq!(kind.behavior(), NotificationBehavior::Clear);
+            assert_eq!(
+                NotificationWrite::from_kind(Some(kind)),
+                NotificationWrite::Clear,
+                "kind {kind:?}"
+            );
         }
         assert_eq!(
-            NotificationKind::AuthSuccess.behavior(),
-            NotificationBehavior::Ignore
-        );
-    }
-
-    #[test]
-    fn notification_behavior_from_kind_defaults_absent_to_raise() {
-        assert_eq!(
-            NotificationBehavior::from_kind(None),
-            NotificationBehavior::Raise
-        );
-        assert_eq!(
-            NotificationBehavior::from_kind(Some(NotificationKind::AuthSuccess)),
-            NotificationBehavior::Ignore
+            NotificationWrite::from_kind(Some(NotificationKind::AuthSuccess)),
+            NotificationWrite::Ignore
         );
     }
 

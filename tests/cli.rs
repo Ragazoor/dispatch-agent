@@ -485,27 +485,52 @@ async fn assert_hook_initialises_app_log(subcommand: &str, rest: &[&str]) {
 
 #[test]
 fn hook_unknown_task_skips() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args([
-            "--db",
-            db.path().to_str().unwrap(),
-            "hook",
-            "99999",
-            "notification",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "expected success (skip) for unknown task, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Every hook event exits 0 for a task that no longer exists — the contract
+    // report_hook_outcome exists to hold. A hook fires from a session whose
+    // task may since have been archived or deleted, and a non-zero exit would
+    // surface in the agent's terminal for something it cannot act on.
+    for kind in ["notification", "pre_tool_use", "stop", "user_prompt_submit"] {
+        let db = NamedTempFile::new().unwrap();
+        let out = binary()
+            .args(["--db", db.path().to_str().unwrap(), "hook", "99999", kind])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "expected success (skip) for unknown task on {kind}, stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// Only `pre_tool_use` names the missing task. It is the one hook event whose
+/// handler still reads the row — the other three decide their branch inside a
+/// conditional UPDATE, where a task that no longer exists simply matches no row
+/// and there is nothing to report. Asserted rather than left implicit because
+/// the quiet skip is the deliberate outcome, not an oversight.
+#[test]
+fn hook_unknown_task_reports_not_found_only_on_the_path_that_reads_the_row() {
+    let run = |kind: &str| {
+        let db = NamedTempFile::new().unwrap();
+        let out = binary()
+            .args(["--db", db.path().to_str().unwrap(), "hook", "99999", kind])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    let stderr = run("pre_tool_use");
     assert!(
         stderr.contains("not found"),
         "expected 'not found' message, got stderr: {stderr}"
     );
+    for kind in ["notification", "stop", "user_prompt_submit"] {
+        let stderr = run(kind);
+        assert!(
+            !stderr.contains("not found"),
+            "{kind} must skip silently, got stderr: {stderr}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

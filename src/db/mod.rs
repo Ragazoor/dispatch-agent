@@ -9,9 +9,9 @@ use std::path::Path;
 
 use crate::models::{
     Epic, EpicId, FeedItem, FeedRole, Learning, LearningId, LearningKind, LearningRetrieval,
-    LearningScope, LearningStatus, LearningVerdict, RetrievalSource, ShellDrain, StopOutcome,
-    SubStatus, SubagentDrain, Task, TaskId, TaskStatus, TaskTag, Todo, TodoId, UserPromptOutcome,
-    WrapUpMode,
+    LearningScope, LearningStatus, LearningVerdict, NotificationWrite, RetrievalSource, ShellDrain,
+    StopOutcome, SubStatus, SubagentDrain, Task, TaskId, TaskStatus, TaskTag, Todo, TodoId,
+    UserPromptOutcome, WrapUpMode,
 };
 
 /// Number of decode soft-fails since process start: unknown enum values that
@@ -306,6 +306,51 @@ pub trait TaskCrud: TaskRead {
         id: TaskId,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<StopOutcome>;
+    /// Apply a `PreToolUse`/`PostToolUse` hook to `id`: stamp
+    /// `last_pre_tool_use_at` and set `sub_status`, only while the task is
+    /// still running.
+    ///
+    /// The `status = running` guard rides in the statement rather than being
+    /// checked against a prior read. A concurrent `Stop` flipping the row to
+    /// `Review` between the two would otherwise leave this write producing
+    /// `(review, active)`, which the `tasks` CHECK constraint rejects — a loud
+    /// error out of a hook process that has no caller to report it to. A row
+    /// the guard rejects is a silent no-op. See `HookPreToolUse` in
+    /// `docs/specs/agent-health.allium`.
+    ///
+    /// `sub_status` is still classified from a snapshot by the caller, which
+    /// is sound here where it is not for `record_notification`: the value is
+    /// re-derived from fresh state by `ClassifyAgentActivity` on the next
+    /// tick, so a stale read self-corrects within a tick.
+    async fn record_pre_tool_use(
+        &self,
+        id: TaskId,
+        sub_status: SubStatus,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
+    /// Apply a `Notification` hook to `id`, deciding against the row's
+    /// committed state rather than a prior read.
+    ///
+    /// One conditional statement per [`NotificationWrite`] variant, each
+    /// carrying its own predicate — `status = running` for all of them, plus
+    /// `live_subagents = 0 AND live_shells = 0` for
+    /// [`RaiseIfNoOwnWorkLive`](NotificationWrite::RaiseIfNoOwnWorkLive). The
+    /// counts are never read into the process first: every Claude Code hook is
+    /// its own OS process, so a count read beforehand can already be stale by
+    /// the time the write lands, and this is the same argument
+    /// [`try_record_stop`](Self::try_record_stop) makes for the identical two
+    /// counters.
+    ///
+    /// A row the predicate rejects — a task no longer running, or one whose
+    /// own background work is still live — is a silent no-op, not an error:
+    /// the hook observed a state that has since moved on. See
+    /// `HookNotification` in `docs/specs/agent-health.allium`.
+    async fn record_notification(
+        &self,
+        id: TaskId,
+        write: NotificationWrite,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
     /// Apply the `UserPromptSubmit` hook to `id`: resume a `Review` task to
     /// `Running`, or refresh an already-`Running` one, and void the deferred
     /// `Stop` the human's prompt supersedes.

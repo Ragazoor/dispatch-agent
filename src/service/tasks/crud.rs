@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
     classify_agent_activity, clears_pending_stop, sort_order_for_status_transition, EpicId,
-    HookEventKind, NotificationBehavior, ShellEvent, StopOutcome, SubStatus, SubagentEvent, Task,
+    HookEventKind, NotificationWrite, ShellEvent, StopOutcome, SubStatus, SubagentEvent, Task,
     TaskId, TaskStatus, UserPromptOutcome, DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
@@ -766,44 +766,52 @@ impl TaskService {
         id: TaskId,
         kind: HookEventKind,
     ) -> Result<(), ServiceError> {
-        let task = self
-            .db
-            .get_task(id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("Task {} not found", id.0)))?;
-
-        // Stop and UserPromptSubmit are handled before the patch match, not
-        // inside it: both decide a branch against the row's committed state, so
-        // they produce no TaskPatch and must not read `task` — another hook
-        // process can have invalidated that snapshot by the time we write. For
-        // Stop that is the flip-or-defer choice; for UserPromptSubmit it is
-        // whether the deferred Stop it would void is one this prompt actually
-        // supersedes. See HookStop / HookUserPromptSubmit in
-        // agent-health.allium.
-        if kind == HookEventKind::Stop {
-            if self.db.try_record_stop(id, self.clock.now()).await? == StopOutcome::Flipped {
-                self.recalculate_epic_for_task(id).await;
-            }
-            return Ok(());
-        }
-        if kind == HookEventKind::UserPromptSubmit {
-            // Recalculate only for the arm that moved status — Review ->
-            // Running. A refresh of an already-Running task is a plain activity
-            // signal and must not pay for a recalculation on this hot path.
-            if self
-                .db
-                .record_user_prompt_submit(id, self.clock.now())
-                .await?
-                == UserPromptOutcome::Resumed
-            {
-                self.recalculate_epic_for_task(id).await;
-            }
-            return Ok(());
-        }
-
         let now = self.clock.now();
-        let patch = match kind {
-            HookEventKind::PreToolUse if task.status == TaskStatus::Running => {
+        // Exhaustive on purpose: every HookEventKind is handled here, so a new
+        // variant is a compile error rather than a silent no-op.
+        //
+        // Three of the four arms take no snapshot of the row at all. Each
+        // decides its branch against the row's committed state, inside the
+        // statement that applies it — another hook process (every Claude Code
+        // hook is one) can invalidate a snapshot between the read and the
+        // write. For Stop that is the flip-or-defer choice; for
+        // UserPromptSubmit, whether the deferred Stop it would void is one this
+        // prompt actually supersedes; for Notification, whether an idle_prompt
+        // is a real block or the agent waiting on its own background work. See
+        // HookStop / HookUserPromptSubmit / HookNotification in
+        // agent-health.allium.
+        match kind {
+            HookEventKind::Stop => {
+                if self.db.try_record_stop(id, now).await? == StopOutcome::Flipped {
+                    self.recalculate_epic_for_task(id).await;
+                }
+            }
+            HookEventKind::UserPromptSubmit => {
+                // Recalculate only for the arm that moved status — Review ->
+                // Running. A refresh of an already-Running task is a plain
+                // activity signal and must not pay for a recalculation on this
+                // hot path.
+                if self.db.record_user_prompt_submit(id, now).await? == UserPromptOutcome::Resumed {
+                    self.recalculate_epic_for_task(id).await;
+                }
+            }
+            HookEventKind::Notification(notification_kind) => {
+                self.db
+                    .record_notification(id, NotificationWrite::from_kind(notification_kind), now)
+                    .await?;
+            }
+            HookEventKind::PreToolUse => {
+                // The one arm that does need the row, and the only one that
+                // pays for the read. Classifying from a snapshot is sound here
+                // where it is not above: this sub_status is re-derived from
+                // fresh state by ClassifyAgentActivity on the very next tick,
+                // so a stale read self-corrects within a tick. The
+                // `status = running` guard, which cannot self-correct, rides in
+                // the write.
+                let task =
+                    self.db.get_task(id).await?.ok_or_else(|| {
+                        ServiceError::NotFound(format!("Task {} not found", id.0))
+                    })?;
                 let activity = classify_agent_activity(
                     Some(now),
                     task.last_notification_at,
@@ -812,43 +820,13 @@ impl TaskService {
                     task.oldest_live_shell_started_at,
                     now,
                 );
-                Some(
-                    TaskPatch::new()
-                        .last_pre_tool_use_at(Some(now))
-                        .sub_status(activity.to_sub_status()),
-                )
+                self.db
+                    .record_pre_tool_use(id, activity.to_sub_status(), now)
+                    .await?;
             }
-            HookEventKind::Notification(notification_kind)
-                if task.status == TaskStatus::Running =>
-            {
-                Some(match NotificationBehavior::from_kind(notification_kind) {
-                    // Clear: an elicitation just resolved, so the block is
-                    // over. Mirror the PreToolUse resume path — back to
-                    // active, drop the notification timestamp — so the card
-                    // flips back the instant the user answers, without
-                    // waiting for the next PreToolUse.
-                    NotificationBehavior::Clear => TaskPatch::new()
-                        .sub_status(SubStatus::default_for(TaskStatus::Running))
-                        .last_notification_at(None),
-                    // Ignore: an auth-success toast is informational only.
-                    // Empty patch — sub_status and last_notification_at are
-                    // left untouched, so it never raises a false needs_input.
-                    NotificationBehavior::Ignore => TaskPatch::new(),
-                    // Raise: the agent is genuinely blocked (or the kind is
-                    // absent/unrecognised — compat default). See
-                    // `NotificationBehavior::from_kind`.
-                    NotificationBehavior::Raise => TaskPatch::new()
-                        .last_notification_at(Some(now))
-                        .sub_status(SubStatus::NeedsInput),
-                })
-            }
-            _ => None,
-        };
-        // Neither remaining arm moves task.status, so no epic recalculation is
-        // owed here.
-        if let Some(patch) = patch {
-            self.db.patch_task(id, &patch).await?;
         }
+        // Only Stop and UserPromptSubmit move task.status, and both recalculate
+        // their epic above.
         Ok(())
     }
 

@@ -99,6 +99,15 @@ rule ClassifyAgentActivity {
         -- needs_input: a permission prompt genuinely needs a human even
         -- while subagents churn, so hiding it behind a subagent count would
         -- trade one misreport for a worse one.
+        -- That ordering is safe only because every notification that does
+        -- NOT mean "a human is needed" is filtered out before it can stamp
+        -- last_notification_at. auth_success is dropped outright; an
+        -- idle_prompt is dropped conditionally, when the task's own shells or
+        -- subagents are live. Both are decided upstream, at stamp time, by
+        -- HookNotification.
+        -- This rule reads timestamps and never the notification kind, so the
+        -- distinction has to be made there or not at all -- see
+        -- HookNotification's guidance for the full argument.
         -- live_shells > 0 sits below live_subagents (a genuinely live
         -- subagent always wins over an old-looking shell) but above the
         -- plain time-threshold branch, and is checked against its own,
@@ -204,8 +213,15 @@ rule NotifyNeedsInput {
         -- re-notification on a subsequent re-entry. The clearing happens
         -- unconditionally, even when notifications are disabled, so that
         -- stale entries do not suppress notifications after re-enabling.
-        -- The task is in running/needs_input (Blocked visual column),
-        -- set by HookNotification when the agent raises a notification.
+        -- The task is in running/needs_input (Blocked visual column).
+        -- needs_input originates in HookNotification's raise path -- it is the
+        -- only rule that stamps last_notification_at -- though the writer that
+        -- produces the observed transition can be ClassifyAgentActivity, which
+        -- re-derives the same state from that stamp on every tick.
+        -- Four kinds never take that raise path, and so never originate a
+        -- needs_input here: auth_success (ignored outright), the two
+        -- elicitation-resolution kinds (which clear instead), and idle_prompt
+        -- while the task's own background work is live (see HookNotification).
 }
 
 rule NotifyReview {
@@ -239,7 +255,16 @@ rule HookPreToolUse {
 
     requires: task.status = running
 
-    ensures: task.sub_status = core/SubStatus.default_for(running)
+    ensures:
+        if task.live_subagents = 0 and task.live_shells > 0
+           and task.oldest_live_shell_started_at != null
+           and now - task.oldest_live_shell_started_at > config.shell_stale_threshold:
+            -- A tool call does not vouch for a background shell that has been
+            -- running for hours, so the stale_shell signal survives it rather
+            -- than being cleared here and re-derived on the next tick.
+            task.sub_status = stale_shell
+        else:
+            task.sub_status = core/SubStatus.default_for(running)
     ensures: task.last_pre_tool_use_at = now
 
     @guidance
@@ -247,6 +272,12 @@ rule HookPreToolUse {
         -- PostToolUse events. Both events are handled identically: they
         -- stamp last_pre_tool_use_at so the task stays Active through the
         -- 10-minute threshold.
+        -- The stale_shell branch above is a second copy of the top of
+        -- ClassifyAgentActivity's precedence (live subagents beat live shells
+        -- beat the time threshold), because the implementation shares one
+        -- classifier between the two. It must track that rule's ordering: an
+        -- earlier draft dropped the live_subagents conjunct and said
+        -- stale_shell where the code says active. Change one, check the other.
         --
         -- PostToolUse is registered in addition to PreToolUse so that the
         -- activity timestamp is refreshed after every tool call completes.
@@ -753,10 +784,16 @@ rule HookUserPromptSubmit {
 
 rule HookNotification {
     when: Notification(task, kind?)
+    -- Like HookPreToolUse's, this `requires` is a silent no-op rather than a
+    -- rejection: a notification for a task that has left running describes a
+    -- state that has since moved on, and the hook process has no caller to
+    -- report to. The predicate rides in the write itself (see below), so a
+    -- task that leaves running concurrently simply matches no row.
     requires: task.status = running
 
     ensures:
-        if kind = null or kind in {permission_prompt, elicitation_dialog, idle_prompt}:
+        if (kind = null or kind in {permission_prompt, elicitation_dialog})
+            or (kind = idle_prompt and task.live_shells = 0 and task.live_subagents = 0):
             -- Raise: agent is genuinely blocked (or the payload predates the
             -- notification_type field, in which case we preserve the historical
             -- "always needs_input" behaviour as a safe default).
@@ -769,27 +806,92 @@ rule HookNotification {
             -- user answers, without waiting for the next PreToolUse.
             task.sub_status = core/SubStatus.default_for(running)
             task.last_notification_at = null
-        -- Ignore: kind = auth_success is informational only. No branch matches,
-        -- so sub_status and last_notification_at are left untouched (no-op).
+        -- Ignore: no branch matches, so sub_status and last_notification_at are
+        -- left untouched (no-op). Two cases land here: kind = auth_success,
+        -- which is informational only, and an idle_prompt raised while the
+        -- task's own background work is still live — see the guidance below.
 
     @guidance
         -- HookNotification fires when Claude Code raises a notification. The
         -- shell hook (task-status-hook) reads the payload's `notification_type`
         -- and forwards it as an optional `--kind` argument:
         --   dispatch hook <id> notification [--kind <notification_type>]
-        -- `NotificationKind::behavior()` (models/tasks.rs) maps the kind to
-        -- one of three behaviours; record_hook_event matches on that
-        -- behaviour to build the patch. See the branches above. `kind` is
+        -- `NotificationWrite::from_kind` (models/tasks.rs) resolves the kind
+        -- alone into the write to apply; record_hook_event hands that straight
+        -- to `record_notification` (db/queries/tasks.rs), which applies it as
+        -- one conditional statement. See the branches above. `kind` is
         -- core/NotificationKind.
         --
+        -- Evaluation time. The idle_prompt branch is the only one that reads
+        -- task state, and it is evaluated against the task's committed state as
+        -- part of the same atomic write, not against a value read beforehand --
+        -- the identical requirement HookStop states for the identical two
+        -- counters, and for the identical reason: every Claude Code hook runs
+        -- as its own OS process, so a count read before the write can already
+        -- be stale by the time the write lands. `NotificationWrite` is resolved
+        -- from the kind alone precisely so the live-work predicate can travel
+        -- into the statement rather than being settled in front of it. A row
+        -- the predicate rejects is a silent no-op.
+        --
+        -- HookPreToolUse reads the same two counters from a plain snapshot and
+        -- does not need this treatment: it re-derives a sub_status that
+        -- ClassifyAgentActivity recomputes from fresh state on the very next
+        -- tick, so a stale read there self-corrects within a tick. A stamped
+        -- last_notification_at does not: it outlives the tick that read it,
+        -- and only a later write ends the pin -- a PreToolUse or
+        -- UserPromptSubmit stamping a newer last_pre_tool_use_at, a clear-kind
+        -- notification, or the move to review nulling both. That asymmetry is
+        -- what makes the atomic write load-bearing here and merely tidy there.
+        --
         -- Classification (core/NotificationKind):
-        --   raise  -> permission_prompt, elicitation_dialog, idle_prompt,
-        --             and absent/unknown (compat): (running, needs_input),
+        --   raise  -> permission_prompt, elicitation_dialog, and
+        --             absent/unknown (compat): (running, needs_input),
         --             the Blocked visual column; stamps last_notification_at.
+        --             idle_prompt raises too, but only when the task has no
+        --             live background work of its own -- see below.
         --   clear  -> elicitation_complete, elicitation_response: back to
         --             (running, active), last_notification_at = null.
         --   ignore -> auth_success: no state change, no timestamp write, so an
         --             auth-success toast no longer raises a false needs_input.
+        --             idle_prompt while live_shells > 0 or live_subagents > 0
+        --             lands here for the same reason -- see below.
+        --
+        -- Why idle_prompt is conditional. An agent that backgrounds a shell
+        -- (Bash with run_in_background) ends its turn while that shell keeps
+        -- running: HookStop defers the flip to review because live_shells > 0,
+        -- and Claude Code, seeing a session that has stopped producing output,
+        -- fires Notification(idle_prompt) about a minute later. Nothing is
+        -- waiting on a human -- the agent is waiting on its own work -- so
+        -- raising needs_input there reports a block that does not exist.
+        -- Observed on tasks #4608 and #4478, both of which sat in the Blocked
+        -- column for hours with stop_pending = 1 and live_shells > 0 while
+        -- their agents waited on `sbt reference/test`.
+        --
+        -- Not stamping last_notification_at is the load-bearing half of the
+        -- suppression, not an incidental one. ClassifyAgentActivity reads only
+        -- timestamps, so a stamped last_notification_at newer than
+        -- last_pre_tool_use_at re-pins needs_input on every tick and the card
+        -- cannot recover until the next PreToolUse. Leaving it null lets that
+        -- rule fall through to its live_subagents / live_shells branches, which
+        -- read active (or stale_shell past shell_stale_threshold).
+        --
+        -- Suppression cannot strand a task in Blocked, because it writes
+        -- nothing to be stranded by: the task keeps whatever
+        -- ClassifyAgentActivity derives from its live counts and timestamps
+        -- (active, then stale or stale_shell). Nor does it strand one in
+        -- running: when the last shell or subagent drains, any Stop deferred
+        -- behind it applies and the task moves to review (HookShellStop /
+        -- HookSubagentStop). An idle_prompt that arrived with no Stop deferred
+        -- behind it leaves the task running, which is correct -- the agent's
+        -- turn never ended.
+        --
+        -- permission_prompt and elicitation_dialog stay unconditional, live
+        -- background work or not: a permission decision or a question dialog
+        -- genuinely needs a human while shells churn. This mirrors
+        -- ClassifyAgentActivity's ordering, where needs_input outranks
+        -- live_subagents for exactly that reason. An absent kind is
+        -- unconditional too -- it may be a permission prompt from an older
+        -- Claude Code, and a false Blocked is cheaper than a missed real one.
         --
         -- Only the raise path triggers NotifyNeedsInput (desktop notification),
         -- because that fires on the transition into needs_input. When the agent

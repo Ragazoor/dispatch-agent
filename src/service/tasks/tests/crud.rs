@@ -2438,6 +2438,153 @@ async fn record_hook_event_notification_resolve_kinds_clear_needs_input() {
     }
 }
 
+/// Ignore bucket, conditional arm: an agent that backgrounds a shell ends its
+/// turn while the shell keeps running, so Claude Code calls the session idle
+/// about a minute later. Nothing is waiting on a human — the agent is waiting
+/// on its own work — so idle_prompt must not raise needs_input there.
+#[tokio::test]
+async fn record_hook_event_idle_prompt_is_noop_while_a_shell_is_live() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+    db.shell_start(id, "shell-1", "session-1", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    svc.record_hook_event(
+        id,
+        HookEventKind::Notification(Some(NotificationKind::IdlePrompt)),
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.sub_status, SubStatus::Active);
+    // Leaving the stamp null is the load-bearing half: ClassifyAgentActivity
+    // reads only timestamps, so a stamp here re-pins needs_input every tick.
+    assert!(task.last_notification_at.is_none());
+}
+
+/// Same suppression for a live subagent: the agent is waiting on work it
+/// dispatched itself, not on the user.
+#[tokio::test]
+async fn record_hook_event_idle_prompt_is_noop_while_a_subagent_is_live() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+    db.subagent_start(id, "agent-1", "session-1", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    svc.record_hook_event(
+        id,
+        HookEventKind::Notification(Some(NotificationKind::IdlePrompt)),
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.sub_status, SubStatus::Active);
+    assert!(task.last_notification_at.is_none());
+}
+
+/// The suppression is scoped to idle_prompt alone. A permission decision or a
+/// question dialog genuinely needs a human while background work churns, so
+/// those still raise — mirroring ClassifyAgentActivity, where needs_input
+/// outranks live_subagents for the same reason.
+#[tokio::test]
+async fn record_hook_event_blocking_kinds_still_raise_while_a_shell_is_live() {
+    for kind in [
+        NotificationKind::PermissionPrompt,
+        NotificationKind::ElicitationDialog,
+    ] {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let id = create_running_task(&svc, SubStatus::Active).await;
+        db.shell_start(id, "shell-1", "session-1", chrono::Utc::now())
+            .await
+            .unwrap();
+
+        svc.record_hook_event(id, HookEventKind::Notification(Some(kind)))
+            .await
+            .unwrap();
+
+        let task = svc.get_task(id).await.unwrap();
+        assert_eq!(task.sub_status, SubStatus::NeedsInput, "kind {kind:?}");
+        assert!(task.last_notification_at.is_some(), "kind {kind:?}");
+    }
+}
+
+/// An absent kind (older Claude Code) is not demoted either: it may be a
+/// permission prompt, and a false Blocked is cheaper than a missed real one.
+#[tokio::test]
+async fn record_hook_event_absent_kind_still_raises_while_a_shell_is_live() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+    db.shell_start(id, "shell-1", "session-1", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    svc.record_hook_event(id, HookEventKind::Notification(None))
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.sub_status, SubStatus::NeedsInput);
+    assert!(task.last_notification_at.is_some());
+}
+
+/// With no background work of its own, an idle agent is genuinely waiting on
+/// the user, so idle_prompt raises exactly as before.
+#[tokio::test]
+async fn record_hook_event_idle_prompt_still_raises_with_no_live_work() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_hook_event(
+        id,
+        HookEventKind::Notification(Some(NotificationKind::IdlePrompt)),
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.sub_status, SubStatus::NeedsInput);
+    assert!(task.last_notification_at.is_some());
+}
+
+/// The suppressed idle_prompt must also be a *pure* no-op: it must not clear a
+/// needs_input a real permission prompt raised moments earlier, which would
+/// hide a genuine block behind an unrelated idle toast.
+#[tokio::test]
+async fn record_hook_event_suppressed_idle_prompt_does_not_clobber_needs_input() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::NeedsInput).await;
+    db.patch_task(
+        id,
+        &crate::db::TaskPatch::new().last_notification_at(Some(chrono::Utc::now())),
+    )
+    .await
+    .unwrap();
+    db.shell_start(id, "shell-1", "session-1", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    svc.record_hook_event(
+        id,
+        HookEventKind::Notification(Some(NotificationKind::IdlePrompt)),
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.sub_status, SubStatus::NeedsInput);
+    assert!(task.last_notification_at.is_some());
+}
+
 /// Ignore bucket: auth_success is informational — it must not change an active
 /// task's sub_status and must not stamp last_notification_at.
 #[tokio::test]

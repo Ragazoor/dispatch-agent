@@ -4,8 +4,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::set_field;
 
 use crate::models::{
-    EpicId, FeedItem, ShellDrain, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus,
-    UserPromptOutcome, WrapUpMode,
+    EpicId, FeedItem, NotificationWrite, ShellDrain, StopOutcome, SubStatus, SubagentDrain, TaskId,
+    TaskStatus, UserPromptOutcome, WrapUpMode,
 };
 
 use super::super::{CreateTaskRequest, Database, RemovedFeedTask, TaskPatch};
@@ -708,6 +708,69 @@ impl super::super::TaskCrud for Database {
             tx.commit()
                 .context("Failed to commit try_record_stop transaction")?;
             Ok(outcome)
+        })
+        .await
+    }
+
+    async fn record_pre_tool_use(
+        &self,
+        id: TaskId,
+        sub_status: SubStatus,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let stamped = super::format_datetime(now);
+        let sub_status = sub_status.as_str();
+        self.db_call(move |conn| {
+            conn.execute(
+                "UPDATE tasks SET sub_status = ?2, last_pre_tool_use_at = ?3, \
+                 updated_at = datetime('now') \
+                 WHERE id = ?1 AND status = ?4",
+                params![id.0, sub_status, stamped, TaskStatus::Running.as_str()],
+            )
+            .context("Failed to record pre_tool_use")?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn record_notification(
+        &self,
+        id: TaskId,
+        write: NotificationWrite,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        // One statement, three sets of values. The predicate that decides an
+        // idle_prompt raise travels *with* the write, into the WHERE clause,
+        // rather than being settled against a row read beforehand. See the
+        // trait doc comment.
+        let (sub_status, stamp, extra_predicate) = match write {
+            NotificationWrite::Ignore => return Ok(()),
+            NotificationWrite::Clear => (SubStatus::default_for(TaskStatus::Running), None, ""),
+            NotificationWrite::Raise => {
+                (SubStatus::NeedsInput, Some(super::format_datetime(now)), "")
+            }
+            NotificationWrite::RaiseIfNoOwnWorkLive => (
+                SubStatus::NeedsInput,
+                Some(super::format_datetime(now)),
+                " AND live_subagents = 0 AND live_shells = 0",
+            ),
+        };
+        self.db_call(move |conn| {
+            conn.execute(
+                &format!(
+                    "UPDATE tasks SET sub_status = ?2, last_notification_at = ?3, \
+                     updated_at = datetime('now') \
+                     WHERE id = ?1 AND status = ?4{extra_predicate}"
+                ),
+                params![
+                    id.0,
+                    sub_status.as_str(),
+                    stamp,
+                    TaskStatus::Running.as_str()
+                ],
+            )
+            .context("Failed to record notification")?;
+            Ok(())
         })
         .await
     }

@@ -127,11 +127,14 @@ case "$EVENT" in
         ;;
     Stop)               dispatch hook "$ID" stop ;;
     Notification)
-        # Forward the payload's notification_type as --kind so the Rust side
-        # can distinguish a real block (permission_prompt/idle_prompt/
-        # elicitation_dialog) from noise (auth_success) or a resolved
-        # elicitation (elicitation_complete/elicitation_response). Absent on
-        # older Claude Code — omitted, which the Rust side treats as needs_input.
+        # Forward the payload's notification_type as --kind and classify
+        # nothing here: the Rust side decides which kinds are a real block
+        # (permission_prompt/elicitation_dialog), which are noise
+        # (auth_success), which resolve one (elicitation_complete/
+        # elicitation_response), and which depend on the task's own live
+        # background work (idle_prompt — see HookNotification in
+        # docs/specs/agent-health.allium). Absent on older Claude Code —
+        # omitted, which the Rust side treats as needs_input.
         NOTIFICATION_TYPE=$(echo "$INPUT" | jq -r '.notification_type // empty')
         if [ -n "$NOTIFICATION_TYPE" ]; then
             dispatch hook "$ID" notification --kind "$NOTIFICATION_TYPE"
