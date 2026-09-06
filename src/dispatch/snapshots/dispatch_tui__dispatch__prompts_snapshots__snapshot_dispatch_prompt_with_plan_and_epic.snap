@@ -16,13 +16,11 @@ To ask questions or send updates to a sibling agent, use ListAgents to find its 
 Plan: /home/user/repo/docs/plans/fix-auth.md
 Read this file for the full implementation plan.
 
-Review the plan carefully. Summarise your intended approach in 3–5 bullet points, then ask: 'Shall I proceed with implementation?' Wait for confirmation before making any changes.
+Read the plan, then summarise the approach you intend to take and ask the user to confirm it. Make no changes until they do.
 
 Always use TDD: express intended behaviour as tests first, then implement the minimum code to make them pass.
 
 The Allium specs in `docs/specs/` are the source of truth for domain logic. Consult them before changing core behaviour. If your implementation changes domain behaviour, update the spec using the `allium:tend` skill and verify alignment with `allium:weed`.
-
-The dispatch MCP tools are available — use them to query and update this task (get_task, update_task).
 
 Knowledge base: when anything is unclear, call `query_learnings` to check the knowledge base before guessing or asking. When you act on a surfaced learning, call `rate_learning` (`helped` or `wrong`); use `/learnings` to record useful findings. Use `delete_learning` to remove stale or incorrect entries by ID.
 

@@ -207,7 +207,8 @@ rule DispatchTask {
         --
         -- The fallback names the skill and stops. It does not restate
         -- brainstorming's own process, and it does not restate TDD —
-        -- {tdd_instruction} is in the trailing block either way. The
+        -- brainstorming names no design sequence of its own, so
+        -- {tdd_instruction} stays in its trailing block. The
         -- behaviour belongs to the skill the agent loads; a prompt that
         -- paraphrases it can only drift from it.
         --
@@ -229,6 +230,42 @@ rule DispatchTask {
         -- Nothing on the kanban board changes: the action-hint label stays
         -- "dispatch" whichever design step the prompt names, per
         -- OneNameForStartingATask above.
+
+    @guarantee NoLineRestatesTheDesignStep
+        -- The trailing block never repeats a rule the addendum above it has
+        -- already given. Concretely: when spec_first_instruction is in the
+        -- prompt, BOTH {tdd_instruction} and {allium_instruction} are dropped.
+        -- That sequence states test-first as its steps 3 and 4 ("confirm they
+        -- fail before you write any code" / "implement the minimum code that
+        -- makes them pass") and the tend/weed cycle as its steps 2 and 5, all
+        -- four unconditionally.
+        --
+        -- Repeating either a few lines later is not harmless reinforcement. The
+        -- trailing wordings are WEAKER than the steps they repeat —
+        -- {allium_instruction}'s "if your implementation changes domain
+        -- behaviour" is a conditional where step 2 was an unconditional step —
+        -- so an agent reconciling the two can read the restatement as
+        -- narrowing the step, and conclude the spec update is optional. Two
+        -- wordings of one rule cost tokens and buy ambiguity.
+        --
+        -- The omission is conditional on spec-first actually being present, and
+        -- the other two paths keep both lines because neither states them
+        -- elsewhere: a task WITH a plan attached never reaches the sequence,
+        -- and brainstorm_instruction names a skill without naming TDD or
+        -- Allium.
+
+    @guarantee ThePromptNamesNoToolMerelyToSayItExists
+        -- Dispatch's MCP tools reach the agent as real tool schemas, so prompt
+        -- prose that lists them ("the dispatch MCP tools are available —
+        -- get_task, update_task") shadows that list: it states no fact the
+        -- schema lacks, and it goes stale the moment the tool set changes,
+        -- with nothing checking it. A tool is named in a prompt only where the
+        -- prompt asks for a SPECIFIC call the schema cannot imply — quick
+        -- dispatch naming update_task for the rename off its placeholder
+        -- title, or {learning_tools_instruction} saying WHEN to reach for
+        -- query_learnings. What a tool does belongs in that tool's own
+        -- description; see the tool-description standard at the head of
+        -- mcp-task-tools.allium.
 
     @guarantee EveryTaskAgentLaunchesInAutoMode
         -- Every task-agent launch starts Claude in auto mode — i.e.
@@ -658,11 +695,15 @@ rule DispatchTask {
         --                                    AugmentDispatchPromptWithLearnings)
         --   {mode_addendum}                (mode-specific block)
         --   <blank>
-        --   {tdd_instruction}              (shared verbatim)
+        --   {tdd_instruction}              (omitted when the prompt already
+        --                                    carries spec_first_instruction —
+        --                                    see NoLineRestatesTheDesignStep)
         --   {allium_instruction}           (only when the task's repo keeps
         --                                    Allium specs — see
-        --                                    DesignStepMatchesTheReposSpecs)
-        --   {mcp_tools_instruction}        (shared verbatim)
+        --                                    DesignStepMatchesTheReposSpecs —
+        --                                    and omitted alongside
+        --                                    {tdd_instruction} on the
+        --                                    spec-first path)
         --   {learning_tools_instruction}   (shared verbatim — one-line
         --                                    nudge to call query_learnings
         --                                    when uncertain, and use the
@@ -771,8 +812,8 @@ rule DispatchTask {
         -- is delegation, not implementation, so stopping there is
         -- legitimate).
         -- DispatchResearchTask is an exception to the unified trailing
-        -- block: its prompt includes only {mcp_tools_instruction} and
-        -- omits tdd, allium, learning_tools, and wrap_up. The research agent
+        -- block: its prompt includes only {learning_tools_instruction} and
+        -- omits tdd, allium, and wrap_up. The research agent
         -- presents findings interactively and does not terminate via
         -- the standard wrap-up flow.
         -- Dependabot exception: when task.tag = dependabot, build_prompt
@@ -782,17 +823,17 @@ rule DispatchTask {
         -- + merge if safe via `gh pr review --approve` and `gh pr merge
         -- --squash --auto`, else ask the user and set sub_status =
         -- needs_input). The trailing block is also reduced to just
-        -- {mcp_tools_instruction} + {learning_tools_instruction} — no
-        -- tdd, no allium, and explicitly NO wrap_up_instruction, because
+        -- {learning_tools_instruction} — no tdd, no allium, and
+        -- explicitly NO wrap_up_instruction, because
         -- the dependabot task is auto-cleaned when its PR merges (or
         -- the user takes over). PrReview exception: when task.tag =
         -- pr_review, build_prompt replaces the spec_first
         -- addendum with a minimal PR review runbook (check diff size
         -- via `gh pr diff`, run /review for small PRs or /review-pr for
         -- large PRs, do not call /wrap-up). The trailing block is also
-        -- reduced to just {mcp_tools_instruction} +
-        -- {learning_tools_instruction} — no tdd, no allium, and
-        -- explicitly NO wrap_up_instruction, because the PR review agent
+        -- reduced to just {learning_tools_instruction} — no tdd, no
+        -- allium, and explicitly NO wrap_up_instruction, because the PR
+        -- review agent
         -- presents findings and waits for the user's instructions. The
         -- fix tag falls through to this rule and uses the full trailing
         -- block — it is purely a kanban-board label, not a routing key.
@@ -826,8 +867,10 @@ rule DispatchResearchTask {
         -- enforced permission boundary — the agent is trusted to honour
         -- it rather than blocked from disobeying it.
         -- Prompt note: build_research_prompt emits a stripped-down
-        -- trailing block — only {mcp_tools_instruction}, no tdd,
-        -- allium, learning_tools, or wrap_up. The research agent
+        -- trailing block — only {learning_tools_instruction}, no tdd,
+        -- allium, or wrap_up. A research agent has more use for the
+        -- knowledge base than any other mode, so that is the one line it
+        -- keeps. The research agent
         -- presents findings interactively and does not terminate via
         -- the standard wrap-up flow.
 }

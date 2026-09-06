@@ -3,7 +3,8 @@ name: grill
 description: >-
   Interview the user relentlessly about a plan or design, then capture decisions
   in Allium specs and ADRs. Use when the user wants to stress-test an idea before
-  building, or says any 'grill' trigger phrase.
+  building — "grill me on this", "poke holes in this", "interrogate this design",
+  "challenge my assumptions", "what am I missing".
 ---
 
 # Grill

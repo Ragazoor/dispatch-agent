@@ -504,11 +504,23 @@ rule RecordLearningViaMcp {
         -- a violation from the source alone, without knowing what the author
         -- meant? If yes it is a lint rule and prose is the wrong home
         -- anywhere — write the check, record nothing. If no it is judgment,
-        -- and prose is right. If the finding is that the code is shaped wrong
-        -- rather than that a rule exists, it is a smell and the fix is a
-        -- refactor, not a sentence. This is guidance, not a validated
+        -- and prose is right. This is guidance, not a validated
         -- precondition — nothing can check it mechanically, which is the
         -- point of the question.
+        --
+        -- == What the description carries, and what the skill carries ==
+        -- The two copies are deliberately not equal. The description carries
+        -- only what changes what a caller passes at the moment of the call,
+        -- when the skill may not be loaded: the two hard rules above (name no
+        -- code; a procedural entry states its boundary) and the triage
+        -- question. Everything else — the record/don't-record lists, the kind
+        -- and scope tables, how to write a summary, the third triage branch
+        -- where the finding is a smell and the fix is a refactor rather than a
+        -- sentence — lives in the /learnings skill, and the description points
+        -- there rather than restating it. The split exists because the two
+        -- surfaces have no mechanism keeping them in step: what is duplicated
+        -- is duplicated by hand, so only the load-bearing sentences earn a
+        -- second copy.
         -- Implemented in find_code_citation() / create_learning()
         -- (src/service/learnings.rs).
 }

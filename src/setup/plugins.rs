@@ -458,6 +458,7 @@ mod tests {
             "hooks/scripts/task-status-hook",
             "hooks/scripts/pr-learnings-hook",
             "skills/wrap-up/SKILL.md",
+            "skills/retro/SKILL.md",
             "skills/decompose-review/SKILL.md",
             "skills/decompose-review/references/plan-template.md",
             "skills/learnings/SKILL.md",
@@ -1229,6 +1230,27 @@ mod tests {
         assert!(
             section.to_lowercase().contains("rot"),
             "the rule must explain WHY (silent rot, no re-check) not just state a ban: {section}"
+        );
+    }
+
+    /// The two skills that both tell an agent to rate a learning must not
+    /// disagree about *when*. `learnings` says at the moment you act on the
+    /// entry, explicitly "not deferred to wrap-up"; wrap-up's own copy used to
+    /// permit "at the latest before you wrap up", which is that deferral. An
+    /// agent reads whichever it loaded, so the looser wording wins whenever
+    /// wrap-up is the one in context — and rating a batch at the end is the
+    /// behaviour the immediate rule exists to prevent.
+    #[test]
+    fn wrap_up_and_learnings_agree_that_rating_is_not_deferred() {
+        let learnings = skill_body("learnings");
+        assert!(
+            learnings.contains("not deferred to wrap-up"),
+            "the learnings skill must keep the rate-immediately rule this test pins wrap-up to"
+        );
+        let wrap_up = skill_body("wrap-up");
+        assert!(
+            !wrap_up.contains("at the latest before you wrap up"),
+            "wrap-up must not permit the deferral the learnings skill forbids"
         );
     }
 

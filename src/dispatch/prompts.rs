@@ -177,10 +177,12 @@ pub(super) fn tdd_instruction() -> &'static str {
     "Always use TDD: express intended behaviour as tests first, then implement the minimum code to make them pass."
 }
 
-/// MCP tools availability notice, shared across all task agents.
-pub(super) fn mcp_tools_instruction() -> &'static str {
-    "The dispatch MCP tools are available — use them to query and update this task (get_task, update_task)."
-}
+// There is deliberately no "the dispatch MCP tools are available (get_task,
+// update_task)" line here any more. Both tools reach the agent as real tool
+// schemas, and naming them again in prompt prose shadows that list: it states
+// no fact the schema lacks, and it goes stale the moment the tool set changes.
+// `get_task`'s own description now carries what the prose was standing in for —
+// what the response looks like and which of its lines matter.
 
 /// One-line knowledge-base nudge for dispatched agents. The earlier
 /// seven-skill checkpoint list saw <2 invocations each across hundreds
@@ -294,26 +296,56 @@ Consult them before changing core behaviour. If your implementation changes doma
 update the spec using the `allium:tend` skill and verify alignment with `allium:weed`."
 }
 
-/// Trailing metadata shared by every dispatched task agent prompt:
-/// `tdd + allium + mcp + learning + wrap_up`, separated by blank lines.
-/// Each `format!` in a builder ends with `{trailing}` where this helper plugs in.
-///
-/// `allium_instruction` is the one conditional line. It is omitted wholesale for
-/// a repo with no specs: telling an agent that `docs/specs/` is the source of
-/// truth for domain logic is false there, and it would send the agent looking
-/// for a directory that does not exist. The omission applies in both plan
-/// states, so one repo never gets contradictory prompts depending on whether a
-/// plan is attached.
-pub(super) fn trailing_block(has_allium_specs: bool) -> String {
-    let mut lines = vec![tdd_instruction()];
-    if has_allium_specs {
-        lines.push(allium_instruction());
+/// What the addendum above the trailing block already said, which decides which
+/// trailing lines would be restatements. Three variants because only three
+/// states are reachable: a two-boolean signature admitted a fourth
+/// (spec-first in a repo with no specs) that cannot occur, and left
+/// `has_allium_specs` silently unread whenever spec-first was set.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Preceding {
+    /// `spec_first_instruction` — states test-first as its steps 3 and 4, and
+    /// the tend/weed cycle as its steps 2 and 5.
+    SpecFirst,
+    /// A plan was attached, in a repo that keeps specs. The prompt names no
+    /// design sequence, so both trailing lines carry.
+    PlanWithSpecs,
+    /// The repo keeps no Allium specs, so the design step is
+    /// `brainstorm_instruction`, which names a skill and nothing else.
+    NoSpecs,
+}
+
+impl Preceding {
+    /// The design-step branch, given whether a plan is attached and whether the
+    /// repo keeps specs. The single place the mapping lives, so the two
+    /// builders cannot disagree about which branch they took.
+    pub(super) fn resolve(has_plan: bool, has_allium_specs: bool) -> Self {
+        match (has_plan, has_allium_specs) {
+            (_, false) => Preceding::NoSpecs,
+            (true, true) => Preceding::PlanWithSpecs,
+            (false, true) => Preceding::SpecFirst,
+        }
     }
-    lines.extend([
-        mcp_tools_instruction(),
-        learning_tools_instruction(),
-        wrap_up_instruction(),
-    ]);
+}
+
+/// Trailing metadata shared by every dispatched task agent prompt:
+/// `[tdd] + [allium] + learning + wrap_up`, separated by blank lines. Each
+/// `format!` in a builder ends with `{trailing}` where this helper plugs in.
+///
+/// The first two lines are conditional, and `Preceding` says why — see
+/// `NoLineRestatesTheDesignStep` and `DesignStepMatchesTheReposSpecs` in
+/// `docs/specs/dispatch.allium`. In short: the trailing block never repeats a
+/// rule the addendum above it already gave, and it never points a spec-less
+/// repo at `docs/specs/`.
+pub(super) fn trailing_block(preceding: Preceding) -> String {
+    let mut lines = match preceding {
+        // Steps 2-5 of spec-first already state both, unconditionally.
+        Preceding::SpecFirst => Vec::new(),
+        Preceding::PlanWithSpecs => vec![tdd_instruction(), allium_instruction()],
+        // Telling an agent `docs/specs/` is the source of truth is false in a
+        // repo with no such directory, and would send it looking for one.
+        Preceding::NoSpecs => vec![tdd_instruction()],
+    };
+    lines.extend([learning_tools_instruction(), wrap_up_instruction()]);
     lines.join("\n\n")
 }
 
@@ -407,23 +439,16 @@ been reviewed and confirmed, so no summary or confirmation step is needed."
             } else {
                 ".\n\
 \n\
-Review the plan carefully. Summarise your intended approach in 3–5 bullet points, \
-then ask: 'Shall I proceed with implementation?' Wait for confirmation before \
-making any changes."
+Read the plan, then summarise the approach you intend to take and ask the user to \
+confirm it. Make no changes until they do."
             };
             format!("Plan: {path}\nRead this file for the full implementation plan{tail}")
         }
     };
     let trailing = if is_review {
-        format!(
-            "{mcp}\n\
-\n\
-{learning}",
-            mcp = mcp_tools_instruction(),
-            learning = learning_tools_instruction(),
-        )
+        learning_tools_instruction().to_string()
     } else {
-        trailing_block(ctx.has_allium_specs)
+        trailing_block(Preceding::resolve(plan.is_some(), ctx.has_allium_specs))
     };
 
     let block = task_block(task_id, title, description, epic);
@@ -491,7 +516,9 @@ Then, before making any changes:\n\
         &block,
         ctx,
         &addendum,
-        &trailing_block(ctx.has_allium_specs),
+        // Quick dispatch never carries a plan, so it always asks for a design
+        // step — spec-first whenever the repo keeps specs.
+        &trailing_block(Preceding::resolve(false, ctx.has_allium_specs)),
     )
 }
 
@@ -523,7 +550,7 @@ Do NOT make code changes.";
         &block,
         ctx,
         addendum,
-        mcp_tools_instruction(),
+        learning_tools_instruction(),
     )
 }
 
@@ -934,8 +961,12 @@ mod tests {
             &PromptContext::default(),
         );
         assert!(
-            text.contains("Shall I proceed with implementation?"),
+            text.contains("ask the user to confirm"),
             "default (auto_run_plan: false) must keep asking, got: {text}"
+        );
+        assert!(
+            text.contains("Make no changes until they do"),
+            "the confirmation must gate changes, not just request a summary, got: {text}"
         );
     }
 
@@ -1140,40 +1171,106 @@ got: {text}"
         );
     }
 
-    /// Pointing an agent at `docs/specs/` as the source of truth is false in a
-    /// repo that has no such directory, and it would send the agent looking.
+    /// The whole `trailing_block` contract as one table: which of the two
+    /// conditional lines each `Preceding` carries, plus the two that are
+    /// unconditional. Stated once rather than as three tests each re-asserting
+    /// the invariants, so a fourth state means adding a row instead of deciding
+    /// which test owns what.
+    ///
+    /// The two omissions have different reasons. `NoSpecs` drops the Allium
+    /// line because pointing an agent at `docs/specs/` is false in a repo with
+    /// no such directory. `SpecFirst` drops BOTH because that sequence already
+    /// states them as numbered steps, and the trailing wordings are the weaker
+    /// of the two — see NoLineRestatesTheDesignStep in
+    /// `docs/specs/dispatch.allium`.
     #[test]
-    fn trailing_block_omits_the_allium_instruction_when_the_repo_has_no_specs() {
-        let text = trailing_block(false);
+    fn trailing_block_carries_each_line_exactly_where_it_is_not_a_restatement() {
+        for (preceding, want_tdd, want_allium) in [
+            (Preceding::NoSpecs, true, false),
+            (Preceding::PlanWithSpecs, true, true),
+            (Preceding::SpecFirst, false, false),
+        ] {
+            let text = trailing_block(preceding);
+            assert_eq!(
+                text.contains(tdd_instruction()),
+                want_tdd,
+                "{preceding:?}: tdd presence, got: {text}"
+            );
+            assert_eq!(
+                text.contains(allium_instruction()),
+                want_allium,
+                "{preceding:?}: allium presence, got: {text}"
+            );
+            // No path may point a spec-less repo at the spec directory.
+            if preceding == Preceding::NoSpecs {
+                assert!(
+                    !text.contains("docs/specs/"),
+                    "{preceding:?}: no line may point at docs/specs/, got: {text}"
+                );
+            }
+            // The two unconditional lines, on every path.
+            assert!(
+                text.contains("query_learnings"),
+                "{preceding:?}: the knowledge-base nudge is unconditional, got: {text}"
+            );
+            assert!(
+                text.contains(wrap_up_instruction()),
+                "{preceding:?}: wrap-up is unconditional, got: {text}"
+            );
+        }
+    }
+
+    /// `Preceding::resolve` is the single place the design-step branch is
+    /// derived, so the two builders cannot disagree about which one they took.
+    #[test]
+    fn preceding_resolves_the_design_branch_from_plan_and_specs() {
+        assert_eq!(Preceding::resolve(false, true), Preceding::SpecFirst);
+        assert_eq!(Preceding::resolve(true, true), Preceding::PlanWithSpecs);
+        // A repo with no specs takes the brainstorm branch either way.
+        assert_eq!(Preceding::resolve(false, false), Preceding::NoSpecs);
+        assert_eq!(Preceding::resolve(true, false), Preceding::NoSpecs);
+    }
+
+    /// The de-duplication is conditional on spec-first actually being present.
+    /// A repo with no specs gets `brainstorm_instruction`, which names neither
+    /// TDD nor Allium, so dropping the trailing lines there would leave the
+    /// prompt with no statement of either.
+    #[test]
+    fn brainstorm_path_keeps_the_tdd_line_spec_first_would_have_replaced() {
+        let no_specs = PromptContext {
+            has_allium_specs: false,
+            ..PromptContext::default()
+        };
+        let text = build_prompt(TaskId(1), "t", "d", None, None, &no_specs);
         assert!(
-            !text.contains("source of truth"),
-            "the allium instruction should be gone, got: {text}"
+            text.contains("superpowers:brainstorming"),
+            "sanity: this is the brainstorm path, got: {text}"
         );
-        assert!(
-            !text.contains("docs/specs/"),
-            "no prompt line should point at docs/specs/, got: {text}"
-        );
-        // Everything else in the trailing block survives.
         assert!(
             text.contains(tdd_instruction()),
-            "tdd survives, got: {text}"
+            "the brainstorm path has no other statement of TDD, got: {text}"
         );
-        assert!(
-            text.contains(mcp_tools_instruction()),
-            "mcp survives, got: {text}"
-        );
-        assert!(
-            text.contains("query_learnings"),
-            "the knowledge-base nudge survives, got: {text}"
-        );
-        assert!(
-            text.contains(wrap_up_instruction()),
-            "wrap-up survives, got: {text}"
-        );
+    }
 
+    /// A task WITH a plan attached never reaches the spec-first sequence, so
+    /// both lines stay there too.
+    #[test]
+    fn with_plan_path_keeps_tdd_and_allium() {
+        let text = build_prompt(
+            TaskId(1),
+            "t",
+            "d",
+            Some("/tmp/plan.md"),
+            None,
+            &PromptContext::default(),
+        );
         assert!(
-            trailing_block(true).contains(allium_instruction()),
-            "a spec-keeping repo keeps the allium instruction"
+            text.contains(tdd_instruction()),
+            "the with-plan path has no other statement of TDD, got: {text}"
+        );
+        assert!(
+            text.contains(allium_instruction()),
+            "the with-plan path has no other statement of the tend/weed cycle, got: {text}"
         );
     }
 
@@ -1366,7 +1463,7 @@ stopping point for epic-decomposition tasks, got: {text}"
 
     #[test]
     fn trailing_block_includes_knowledge_base_nudge() {
-        let text = trailing_block(true);
+        let text = trailing_block(Preceding::PlanWithSpecs);
         assert!(
             text.contains("query_learnings"),
             "trailing block should reference query_learnings tool, got: {text}"
@@ -1703,7 +1800,7 @@ stopping point for epic-decomposition tasks, got: {text}"
     }
 
     #[test]
-    fn build_prompt_with_pr_review_tag_includes_mcp_and_learning_instructions() {
+    fn build_prompt_with_pr_review_tag_includes_the_learning_instruction() {
         let ctx = PromptContext {
             tag: Some(TaskTag::PrReview),
             ..PromptContext::default()
@@ -1717,10 +1814,6 @@ stopping point for epic-decomposition tasks, got: {text}"
             &ctx,
         );
 
-        assert!(
-            text.contains("dispatch MCP tools"),
-            "pr-review prompt must include MCP tools instruction"
-        );
         assert!(
             text.contains("query_learnings"),
             "pr-review prompt must include learning tools instruction"

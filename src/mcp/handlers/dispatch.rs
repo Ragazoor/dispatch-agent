@@ -124,12 +124,18 @@ fn task_status_enum_values_including_archived() -> Vec<&'static str> {
 
 mcp_tools! {
     async "update_task" => tasks::handle_update_task,
-        "Update a task's status, sub_status, title, description, repo_path, plan, and/or PR fields. At least one field besides task_id must be provided.",
+        "Update a task in place. Accepts status, sub_status, title, description, repo_path, \
+plan_path, sort_order, url, url_type, tag, epic_id, base_branch, wrap_up_mode, auto_run_plan and \
+phoenix. At least one field besides task_id must be provided; every field left out is untouched.",
         // Generated from the `mcp_args!` field list in `tasks::mod`.
         (tasks::update_task_schema());
 
     async "get_task" => tasks::handle_get_task,
-        "Get details about a task",
+        "Get details about a task. The response is labelled prose — one 'Label: value' line per \
+field, not JSON — and a line is rendered only when its field is set, so an absent line means \
+unset rather than empty. Three lines are what a wrapping-up agent needs: 'Base branch' (what to \
+diff and rebase against), 'Verify command' (the check to run green before declaring work \
+complete) and 'Wrap-up mode' (a wrap-up action already chosen for you).",
         {
             "type": "object",
             "properties": {
@@ -142,7 +148,10 @@ mcp_tools! {
         };
 
     async "create_task" => tasks::handle_create_task,
-        "Create a new task on the kanban board. Tasks always start in 'backlog' status. Caller identity is provided by the dispatch HTTP transport (X-Caller-Task-Id for dispatched agents, X-Caller-Kind: session for non-dispatched sessions) — you do NOT pass a caller_task_id argument. Dispatched agents: the new task inherits epic_id from your task; pass epic_id explicitly to override (epic_id: null clears epic).",
+        "Create a new task on the kanban board. Tasks always start in 'backlog' status. Your \
+identity as caller is established by the transport, not by an argument — there is no \
+caller_task_id to pass. Dispatched agents: the new task inherits epic_id from your task; pass \
+epic_id explicitly to override (epic_id: null clears epic).",
         {
             "type": "object",
             "properties": {
@@ -197,7 +206,7 @@ mcp_tools! {
         };
 
     async "list_tasks" => tasks::handle_list_tasks,
-        "List tasks on the kanban board. Filters are ANDed. When called by a dispatched agent, results auto-scope to the agent's epic and exclude the agent's own task; passing explicit epic_id/repo_paths disables auto-scoping. When called from a non-dispatched session, no auto-scoping. Output includes PR URL and plan goal when available.",
+        "List tasks on the kanban board. Filters are ANDed. When called by a dispatched agent, results auto-scope to the agent's epic and exclude the agent's own task; passing explicit epic_id/repo_paths disables auto-scoping. When called from a non-dispatched session, no auto-scoping. Output includes each task's url under its own type label — 'PR', 'Issue', 'Security Alert' or 'Link', with the number appended where there is one — and the plan goal, when available.",
         {
             "type": "object",
             "properties": {
@@ -221,7 +230,10 @@ mcp_tools! {
         };
 
     async "create_epic" => epics::handle_create_epic,
-        "Create a new epic on the kanban board.",
+        "Create a new epic on the kanban board. An epic groups related tasks and derives its \
+status from theirs, so you do not set an epic's status directly. Pass parent_epic_id to create it \
+as a sub-epic of an existing one. Epics carry no repo_path — that lives on each subtask, and \
+passing it here is rejected.",
         {
             "type": "object",
             "properties": {
@@ -234,7 +246,9 @@ mcp_tools! {
         };
 
     async "get_epic" => epics::handle_get_epic,
-        "Get details about an epic including its subtask summary.",
+        "Get one epic by ID: its title, description, status, plan and a summary of its subtasks \
+by status. Read-only. Use it to check an epic's progress before adding work to it or closing it \
+out. It does not return the subtasks themselves — call list_tasks with epic_id for those.",
         {
             "type": "object",
             "properties": {
@@ -244,11 +258,19 @@ mcp_tools! {
         };
 
     async "list_epics" => epics::handle_list_epics,
-        "List all epics on the kanban board.",
+        "List every epic on the kanban board. Takes no arguments and applies no filtering or \
+auto-scoping — sub-epics come back as ordinary rows alongside their parents rather than nested \
+under them. Use it to find an epic's ID when you only know its title. For one epic's detail or \
+its subtask counts, call get_epic instead.",
         { "type": "object", "properties": {} };
 
     async "update_epic" => epics::handle_update_epic,
-        "Update an epic's title, description, status, plan, sort order, feed configuration, or parent epic.",
+        "Update an epic in place. Accepts title, description, status, plan_path, sort_order, \
+parent_epic_id, and the feed settings feed_command, feed_interval_secs, group_by_repo and \
+feed_append_only. Every field left out is untouched; the nullable ones take an explicit null to \
+clear. Setting status by hand is rarely right — an epic's status is recalculated from its \
+subtasks whenever they change. Re-parenting is cycle-checked and rejected if it would create a \
+loop.",
         {
             "type": "object",
             "properties": {
@@ -313,7 +335,7 @@ it along with the tmux window. Errors if the task is not in backlog status or th
         };
 
     async "subscribe_to_task" => tasks::handle_subscribe_to_task,
-        "Subscribe to be notified when another task finishes (reaches Done or Archived) or is deleted first. If the target has already finished, you're told immediately instead of being subscribed. Delivery is a one-shot tmux nudge (write_message_file + notify_tmux).",
+        "Subscribe to be notified when another task finishes (reaches Done or Archived) or is deleted first. If the target has already finished, you're told immediately instead of being subscribed. Delivery is a one-shot nudge into your tmux session — it fires once and the subscription is then spent.",
         {
             "type": "object",
             "properties": {
@@ -324,7 +346,10 @@ it along with the tmux window. Errors if the task is not in backlog status or th
         };
 
     async "unsubscribe_from_task" => tasks::handle_unsubscribe_from_task,
-        "Cancel a previously registered subscribe_to_task watch. Idempotent — succeeds even if no such subscription exists.",
+        "Cancel a watch previously registered with subscribe_to_task. Idempotent: it succeeds \
+whether or not such a subscription exists, so it is safe to call speculatively. You do not need it \
+after a notification has fired — delivery is one-shot and spends the subscription. Use it when you \
+stop caring about the target before it finishes.",
         {
             "type": "object",
             "properties": {
@@ -335,7 +360,15 @@ it along with the tmux window. Errors if the task is not in backlog status or th
         };
 
     async "record_learning" => learnings::handle_record_learning,
-        "Record a new entry in the shared knowledge base. The entry is immediately active and will be injected into future dispatch prompts for agents working in the matching scope. Omit scope_ref to auto-derive it from the calling task (recommended in most cases). An entry describes durable behavior, a convention, or a domain fact; it must not name the function, type, macro, fixture, test, or file that currently implements it — those rot on the next refactor and nothing re-checks the knowledge base the way check-doc-symbols.sh re-checks docs. Precise claims belong in the Allium spec or a Rust doc comment; the knowledge base keeps the prose. Before writing prose about code, ask: could you write a failing check for a violation from the source alone, without knowing what the author meant? If yes, it is a lint rule — write the check and record nothing. If no, it is judgment, and prose is right. If the code is shaped wrong rather than breaking a rule, it is a smell and the fix is a refactor, not a sentence. A procedural entry must carry a detail saying when to stop following it and ask a human.",
+        "Record a new entry in the shared knowledge base. The entry is immediately active and is \
+injected into future dispatch prompts for agents working in the matching scope. Omit scope_ref to \
+auto-derive it from the calling task (recommended). Three rules apply at call time: an entry \
+describes durable behaviour, a convention or a domain fact, and must not name the function, type, \
+macro, fixture, test or file that implements it (those rot on the next refactor and nothing \
+re-checks this store); if you could write a failing check for a violation from the source alone, \
+it is a lint rule — write the check and record nothing; and a procedural entry must carry a \
+detail saying when to stop following it and ask a human. \
+The /learnings skill carries the full authoring policy.",
         {
             "type": "object",
             "properties": {
@@ -375,7 +408,11 @@ it along with the tmux window. Errors if the task is not in backlog status or th
         };
 
     async "query_learnings" => learnings::handle_query_learnings,
-        "Query the knowledge base for entries relevant to the current task's context using semantic search (RAG). Excludes task-scoped entries.",
+        "Query the knowledge base by semantic similarity to your task's context. Results are \
+ranked by embedding similarity plus a scope and upvote boost, and entries below the similarity \
+threshold are dropped — so an empty result means nothing relevant was found, not that the store is \
+empty. Task-scoped entries are excluded; the entries already injected into your prompt are not, so \
+expect overlap with those. Call it when something is unclear, before guessing or asking.",
         {
             "type": "object",
             "properties": {
@@ -427,8 +464,11 @@ into your prompt or returned by query_learnings).",
         };
 
     async "delete_learning" => learnings::handle_delete_learning,
-        "Delete a learning entry from the knowledge base by ID. \
-Returns an error if the ID does not exist.",
+        "Delete a learning entry from the knowledge base by ID. Permanent and immediate — there \
+is no archive, no soft delete and no human review step, so the entry stops reaching other agents \
+at once. Use it for an entry that is wrong or has gone stale, rather than only downvoting it with \
+rate_learning; downvoting keeps a wrong entry in circulation. Returns an error if the ID does not \
+exist.",
         {
             "type": "object",
             "properties": {
@@ -441,8 +481,10 @@ Returns an error if the ID does not exist.",
         };
 
     async "get_managed_feed_config" => managed_feeds::handle_get_managed_feed_config,
-        "Return the current managed-feed configuration: the PR-reviews and CVE \
-feed commands and their poll intervals (in seconds). Unset values are reported as unset.",
+        "Return the current managed-feed configuration: the PR-reviews and CVE feed commands and \
+their poll intervals (in seconds). Read-only and argument-free. Unset values are reported as \
+unset, which is how you tell a disabled feed from one running on the default interval. Read it \
+before calling set_managed_feed_config, since that tool leaves any field you omit unchanged.",
         { "type": "object", "properties": {} };
 
     async "set_managed_feed_config" => managed_feeds::handle_set_managed_feed_config,
@@ -461,8 +503,10 @@ immediately. Intervals are in seconds; omit an interval to fall back to the defa
         };
 
     async "set_verify_command" => tasks::handle_set_verify_command,
-        "Set or clear the verify command for a repository path. \
-The command is injected into future agent prompts as a mandatory pre-completion check. \
+        "Set or clear the verify command for a repository path — the check an agent working in \
+that repo must run green before declaring work complete. It never appears in a dispatch prompt. \
+It reaches the agent through two surfaces instead: the 'Verify command' line in get_task's \
+response, and the 'Verify before exiting' reminder in the wrap_up response. \
 Pass command=null to clear it.",
         {
             "type": "object",

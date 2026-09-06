@@ -1,8 +1,10 @@
 ---
 name: summarize
 description: >-
-  Summarize what the agent did in this session — goal, commits, files changed,
-  outcome. Use when asked to "summarize", "recap", or "what did you do".
+  Summarize what the agent did in this session — goal, behaviour changes,
+  commits, files changed, outcome. Use when asked to "summarize", "recap", or
+  "what did you do". Also runs as a sub-step of another skill, in which case it
+  hands control straight back rather than ending the turn.
 ---
 
 # Summarize Session

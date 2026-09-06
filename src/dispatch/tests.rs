@@ -5,8 +5,8 @@ use super::mock_sequence::{
 };
 use super::prompts::{
     allium_instruction, build_prompt, build_quick_dispatch_prompt, epic_preamble,
-    mcp_tools_instruction, reused_rebase_preamble, spec_first_instruction, task_block,
-    tdd_instruction, wrap_up_instruction, EpicContext, LearningInjections, PromptContext,
+    reused_rebase_preamble, spec_first_instruction, task_block, tdd_instruction,
+    wrap_up_instruction, EpicContext, LearningInjections, PromptContext,
 };
 use super::worktree::{
     provision_worktree, BaseRef, StartPoint, FETCH_MAX_ATTEMPTS, PROVISION_MAX_SUBPROCESS_CALLS,
@@ -46,13 +46,6 @@ fn task_block_includes_epic_section_when_present() {
 fn tdd_instruction_mentions_tests_first() {
     let instr = tdd_instruction();
     assert!(instr.contains("tests first") || instr.contains("behaviour as tests"));
-}
-
-#[test]
-fn mcp_tools_instruction_mentions_get_and_update() {
-    let instr = mcp_tools_instruction();
-    assert!(instr.contains("get_task"));
-    assert!(instr.contains("update_task"));
 }
 
 #[test]
@@ -222,12 +215,15 @@ fn build_prompt_contains_task_info() {
     assert!(prompt.contains("42"));
     assert!(prompt.contains("Fix bug"));
     assert!(prompt.contains("A nasty crash"));
-    assert!(prompt.contains("TDD"));
 }
 
+/// Every implementation prompt states test-first, but not in the same words:
+/// the spec-first path states it as steps 3-4 ("confirm they fail before you
+/// write any code"), and the with-plan and brainstorm paths state it as the
+/// `tdd_instruction` line. Asserting the acronym would only pin the second.
 #[test]
-fn build_prompt_mentions_tdd() {
-    let prompt = build_prompt(
+fn every_implementation_prompt_states_test_first() {
+    let no_plan = build_prompt(
         TaskId(7),
         "Title",
         "Desc",
@@ -235,8 +231,23 @@ fn build_prompt_mentions_tdd() {
         None,
         &PromptContext::default(),
     );
-    assert!(prompt.contains("TDD"));
-    assert!(prompt.contains("behaviour as tests first"));
+    assert!(
+        no_plan.contains("confirm they fail before you write any code"),
+        "spec-first path must state test-first, got: {no_plan}"
+    );
+
+    let with_plan = build_prompt(
+        TaskId(7),
+        "Title",
+        "Desc",
+        Some("/tmp/p.md"),
+        None,
+        &PromptContext::default(),
+    );
+    assert!(
+        with_plan.contains("behaviour as tests first"),
+        "with-plan path must state test-first, got: {with_plan}"
+    );
 }
 
 #[test]
@@ -353,10 +364,8 @@ fn build_prompt_with_plan_asks_permission_before_implementing() {
     );
     assert!(prompt.contains("docs/plans/plan.md"));
     assert!(
-        prompt.contains("Shall I proceed")
-            || prompt.contains("permission")
-            || prompt.contains("proceed"),
-        "with-plan prompt should ask for permission before implementing"
+        prompt.contains("ask the user to confirm") && prompt.contains("Make no changes"),
+        "with-plan prompt should ask for confirmation and gate changes on it"
     );
     assert!(
         !prompt.contains("step by step"),
@@ -364,8 +373,11 @@ fn build_prompt_with_plan_asks_permission_before_implementing() {
     );
 }
 
+/// The prose tool notice's absence is checked for every prompt by
+/// `SHARED_ABSENT_LINES`. What this covers is the routing the tool schema
+/// cannot carry, which must survive that removal.
 #[test]
-fn build_prompt_mentions_mcp_tools() {
+fn build_prompt_names_the_tools_it_actually_needs_the_agent_to_call() {
     let prompt = build_prompt(
         TaskId(1),
         "Task",
@@ -374,9 +386,12 @@ fn build_prompt_mentions_mcp_tools() {
         None,
         &PromptContext::default(),
     );
+    // The absence of the prose notice is pinned by
+    // `no_prompt_shadows_the_tool_list_with_a_prose_tool_notice`; this test
+    // covers what survives — the routing the schema cannot carry.
     assert!(
-        prompt.contains("dispatch MCP tools"),
-        "standard dispatch prompt should mention MCP tools"
+        prompt.contains("query_learnings"),
+        "the knowledge-base nudge tells the agent WHEN to call, got: {prompt}"
     );
 }
 
@@ -687,11 +702,13 @@ fn build_quick_dispatch_prompt_contains_rename_instruction() {
 }
 
 #[test]
-fn build_quick_dispatch_prompt_mentions_mcp() {
+fn build_quick_dispatch_prompt_names_update_task_for_the_rename() {
     let prompt =
         build_quick_dispatch_prompt(TaskId(1), "Quick task", "", None, &PromptContext::default());
-    assert!(prompt.contains("dispatch MCP tools"));
+    // update_task is named because the prompt asks for a specific call — the
+    // rename off the placeholder title — not as a general tool notice.
     assert!(prompt.contains("update_task"));
+    assert!(!prompt.contains("dispatch MCP tools"));
     assert!(!prompt.contains("add_note"));
 }
 
@@ -749,12 +766,29 @@ fn no_plan_prompts_reference_the_elicit_skill() {
     }
 }
 
+/// Lines every aligned prompt carries, whichever design step it took.
+///
+/// Deliberately shorter than it was. `TDD` and the `allium_instruction` wording
+/// used to be here, but the spec-first path now states both as numbered steps
+/// and drops the trailing restatements — so the acronym and that exact sentence
+/// are no longer universal, while what they were standing in for still is. The
+/// `dispatch MCP tools` prose notice is gone from every prompt.
+///
+/// Test-first is covered by `every_implementation_prompt_states_test_first`,
+/// which knows the two wordings; pinning it here would need a literal no path
+/// shares.
 const SHARED_TRAILING_LINES: &[&str] = &[
-    "TDD",                           // tdd_instruction
-    "Allium specs in `docs/specs/`", // allium_instruction
-    "dispatch MCP tools",            // mcp_tools_instruction
-    "/wrap-up",                      // wrap_up_instruction (universal)
+    "docs/specs/",     // spec_first_instruction's steps, or allium_instruction
+    "query_learnings", // learning_tools_instruction
+    "/wrap-up",        // wrap_up_instruction (universal)
 ];
+
+/// Text no prompt may carry. The dispatch MCP tools reach the agent as real
+/// tool schemas, so prompt prose that lists them shadows that list: it states
+/// no fact the schema lacks, and it goes stale the moment the tool set changes.
+/// The needle is the short form deliberately — it also catches a reworded
+/// reintroduction, which the full sentence would not.
+const SHARED_ABSENT_LINES: &[&str] = &["dispatch MCP tools"];
 
 fn all_aligned_prompts() -> [(&'static str, String); 3] {
     [
@@ -800,6 +834,12 @@ fn every_prompt_includes_shared_trailing_metadata() {
             assert!(
                 prompt.contains(needle),
                 "{name} prompt missing shared trailing line: {needle}\n--- prompt ---\n{prompt}"
+            );
+        }
+        for needle in SHARED_ABSENT_LINES {
+            assert!(
+                !prompt.contains(needle),
+                "{name} prompt carries text no prompt may carry: {needle}\n--- prompt ---\n{prompt}"
             );
         }
     }

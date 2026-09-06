@@ -590,6 +590,248 @@ fn update_task_status_description_says_what_dispatching_from_backlog_reuses() {
     );
 }
 
+/// rule-guidance.SetVerifyCommandViaMcp ("The tool description does not claim
+/// prompt injection"). dispatch.allium's prompt-assembly rule is explicit that
+/// the prompt deliberately carries no verify command; the description used to
+/// say the opposite, which sends a reader looking for the command on the one
+/// surface that never carries it. Assert both halves: the false claim is gone,
+/// and the two surfaces that do carry it are named.
+#[test]
+fn set_verify_command_description_names_the_surfaces_that_carry_the_command() {
+    let desc = tool_description("set_verify_command");
+    assert!(
+        desc.contains("never appears in a dispatch prompt"),
+        "set_verify_command must state that the command reaches no dispatch prompt, got: {desc}"
+    );
+    assert!(
+        !desc.contains("injected into"),
+        "set_verify_command must not claim the command is injected into prompts, got: {desc}"
+    );
+    for needle in ["get_task", "wrap_up"] {
+        assert!(
+            desc.contains(needle),
+            "set_verify_command description must name the '{needle}' surface, got: {desc}"
+        );
+    }
+}
+
+/// An `update_*` tool's description opens by listing what it can change, and
+/// that list is the first thing a caller reads. Derived from each tool's own
+/// schema rather than hardcoded, so a field added to the argument set fails
+/// here until the description learns about it — the drift that left seven of
+/// `update_task`'s fifteen fields unadvertised.
+///
+/// Applies to every `update_*` tool rather than one hand-picked tool, so which
+/// of them carries the guarantee is not a judgement call.
+#[test]
+fn every_update_tool_description_names_every_field_it_accepts() {
+    let defs = tool_definitions();
+    let updaters = defs["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["name"].as_str().unwrap().starts_with("update_"));
+    let mut checked = 0;
+    for tool in updaters {
+        let name = tool["name"].as_str().unwrap();
+        let desc = tool["description"].as_str().unwrap();
+        let props = tool["inputSchema"]["properties"].as_object().unwrap();
+        // `update_task` selects with task_id, `update_epic` with epic_id: the
+        // tool's own name gives the selector, which is not a mutable field.
+        let selector = format!("{}_id", name.trim_start_matches("update_"));
+        for field in props.keys() {
+            if *field == selector {
+                continue;
+            }
+            assert!(
+                desc.contains(field.as_str()),
+                "{name}'s description must name the '{field}' field it accepts, got: {desc}"
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "expected update_task and update_epic, saw {checked}"
+    );
+}
+
+/// rule-guidance.GetTaskViaMcp ("The tool description names the response
+/// shape"). The response is labelled prose, one line per field, rendered only
+/// when set — not JSON. Agents that assumed JSON went looking for snake_case
+/// keys that never appear. The description is where that is cheapest to say,
+/// and it names the three lines the /wrap-up skill reads.
+#[test]
+fn get_task_description_names_the_response_shape() {
+    let desc = tool_description("get_task");
+    assert!(
+        desc.contains("not JSON"),
+        "get_task description must say the response is not JSON, got: {desc}"
+    );
+    // Which labels it quotes is checked against the renderer itself, in
+    // `get_task_description_quotes_only_labels_the_renderer_emits`
+    // (src/mcp/handlers/tasks/mod.rs) — a fixed list here would go stale
+    // silently when a label is renamed.
+}
+
+/// `list_tasks` renders a task's url under its own type label, so a
+/// security-alert task prints "Security alert:" and never "PR:". The
+/// description promised a PR URL, which sends a caller scanning for the wrong
+/// word on three of the four url types.
+#[test]
+fn list_tasks_description_does_not_promise_a_pr_only_url_label() {
+    let desc = tool_description("list_tasks");
+    assert!(
+        !desc.contains("PR URL"),
+        "list_tasks must not describe the url output as a PR URL, got: {desc}"
+    );
+    // Derived from the labels the output actually prints, so a renamed or added
+    // url type fails here rather than quietly going unadvertised.
+    for url_type in crate::models::UrlType::ALL {
+        let label = url_type.type_word();
+        assert!(
+            desc.contains(label),
+            "list_tasks description must name the '{label}' url label, got: {desc}"
+        );
+    }
+}
+
+/// No tool description names the code that implements it. A description is
+/// agent-facing prose with the same rot problem `check-doc-symbols.sh` exists
+/// to catch in `docs/` — and it slips through that checker: the script does
+/// scan `src/`, but harvests only doc-comment lines (`///`, `//!`), so a
+/// description, being a string literal, is invisible to it. Public interface
+/// names are fine: every MCP tool name, and every argument name any tool
+/// declares, are what a caller actually passes.
+///
+/// Detects multi-segment `snake_case` words, which is the shape an internal
+/// Rust item takes and the shape ordinary prose does not. That is one of the
+/// five shapes the script rejects, not all five — a PascalCase-and-method
+/// citation, a file-path-and-symbol one, an empty call, and a macro invocation
+/// all pass this test and have not yet appeared in a description.
+#[test]
+fn no_tool_description_cites_internal_symbol_names() {
+    let defs = tool_definitions();
+    let tools = defs["tools"].as_array().unwrap();
+
+    // Public vocabulary: tool names plus every declared argument name.
+    let mut allowed: std::collections::HashSet<&str> =
+        super::dispatch::TOOL_NAMES.iter().copied().collect();
+    for tool in tools {
+        if let Some(props) = tool["inputSchema"]["properties"].as_object() {
+            allowed.extend(props.keys().map(String::as_str));
+        }
+    }
+    // Settings and enum values a caller sets or reads, not internal items.
+    // `caller_task_id` is here because create_task's description exists partly
+    // to say that argument does NOT exist — naming it is the point.
+    allowed.extend([
+        "auto_dispatch",
+        "saved_repo_paths",
+        "verify_command",
+        "caller_task_id",
+    ]);
+
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        let desc = tool["description"].as_str().unwrap();
+        for word in desc.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            // An empty segment covers a leading, trailing or doubled `_`.
+            let is_multi_segment_snake_case = word.contains('_')
+                && word.split('_').all(|seg| {
+                    !seg.is_empty()
+                        && seg
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                });
+            if is_multi_segment_snake_case {
+                assert!(
+                    allowed.contains(word),
+                    "{name} description cites '{word}', which is neither a tool name nor an \
+                     argument any tool declares — name the behaviour, not the code"
+                );
+            }
+        }
+    }
+}
+
+/// Every tool description carries at least three sentences. Description detail
+/// is the largest single factor in whether a tool gets called correctly, and
+/// the common failure is under-description, not bloat: a one-line description
+/// leaves the caller guessing at what the tool returns, when not to reach for
+/// it, and how it differs from its neighbours. Six tools sat at one or two
+/// sentences — `list_epics` was 35 characters.
+///
+/// Deliberately a floor and not a ceiling: no test caps a description's
+/// length. A long description that states contract is doing its job.
+#[test]
+fn every_tool_description_meets_the_detail_floor() {
+    const MIN_SENTENCES: usize = 3;
+    let defs = tool_definitions();
+    for tool in defs["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
+        let desc = tool["description"].as_str().unwrap();
+        let sentences = desc
+            .split_terminator(['.', '!', '?'])
+            .filter(|s| !s.trim().is_empty())
+            .count();
+        assert!(
+            sentences >= MIN_SENTENCES,
+            "{name}'s description is {sentences} sentence(s); the floor is {MIN_SENTENCES}. \
+             Say what it does, when to use it, and what it does not return. Got: {desc}"
+        );
+    }
+}
+
+/// `create_epic` accepts `parent_epic_id`, so sub-epics are reachable from the
+/// create call and not only from `update_epic`. The description is where a
+/// caller finds that out.
+#[test]
+fn create_epic_description_mentions_sub_epics() {
+    let desc = tool_description("create_epic").to_lowercase();
+    assert!(
+        desc.contains("sub-epic") || desc.contains("parent"),
+        "create_epic description must mention creating a sub-epic, got: {desc}"
+    );
+}
+
+/// The recording policy lives in the `/learnings` skill. What stays in the
+/// description is the part that changes what a caller passes *at call time*,
+/// when the skill may not be loaded: an entry names no code, and a
+/// `procedural` entry must say where it stops. Both surfaces must keep stating
+/// the no-symbol-names rule — it is the one the validator cannot enforce.
+#[test]
+fn record_learning_description_keeps_the_call_time_rules_and_defers_the_rest() {
+    let desc = tool_description("record_learning");
+    assert!(
+        desc.contains("/learnings"),
+        "record_learning description must point at the /learnings skill for the full policy, got: {desc}"
+    );
+    assert!(
+        desc.to_lowercase().contains("procedural"),
+        "record_learning description must keep the procedural-needs-a-boundary rule, got: {desc}"
+    );
+    // No length bound here on purpose. The two assertions above carry the
+    // intent — the call-time rules stay, the policy is deferred — and a
+    // character count with no derivation just gets raised by whoever trips it.
+}
+
+/// `create_task` used to spell out the transport headers that carry caller
+/// identity. A caller cannot set, read or change them; the only actionable
+/// half is that there is no `caller_task_id` argument to pass.
+#[test]
+fn create_task_description_does_not_leak_transport_headers() {
+    let desc = tool_description("create_task");
+    assert!(
+        !desc.contains("X-Caller"),
+        "create_task description must not name transport headers a caller cannot set, got: {desc}"
+    );
+    assert!(
+        desc.contains("caller_task_id"),
+        "create_task description must still say there is no caller_task_id argument, got: {desc}"
+    );
+}
+
 /// `WrapUpAction::ALL` backs the wrap_up/exit_session MCP schema's action
 /// enum (dispatch.rs) — a variant added there without updating `ALL` would
 /// silently under-advertise it.

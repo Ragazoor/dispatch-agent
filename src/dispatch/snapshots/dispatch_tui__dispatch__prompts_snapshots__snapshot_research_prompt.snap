@@ -15,4 +15,4 @@ When you have gathered sufficient information, present your findings clearly to 
 
 Do NOT make code changes.
 
-The dispatch MCP tools are available — use them to query and update this task (get_task, update_task).
+Knowledge base: when anything is unclear, call `query_learnings` to check the knowledge base before guessing or asking. When you act on a surfaced learning, call `rate_learning` (`helped` or `wrong`); use `/learnings` to record useful findings. Use `delete_learning` to remove stale or incorrect entries by ID.

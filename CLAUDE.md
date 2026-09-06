@@ -111,7 +111,9 @@ The `dispatch` MCP server exposes more than task creation. Worth knowing by name
 
 `plugin/skills/*/SKILL.md` is the **source of truth** for the skills agents run (`/wrap-up`, `/retro`, `/learnings`, `/grill`, `/summarize`, `/decompose-review`, `/allium-loop`). The directory is embedded in the binary via `include_dir!` and only reaches `~/.claude/plugins/local/dispatch/` when someone runs `cargo run -- setup` — editing the installed copy is editing a build artifact. Changes there are asserted by the `contains` tests in `src/setup/plugins.rs` (via its `skill_body` helper); see [docs/testing.md](docs/testing.md).
 
-`.claude/skills/` is a separate, unrelated path: a plain tracked directory Claude Code auto-discovers for any session inside this repo, with no build or install step.
+**Frontmatter is gated too, not just bodies** — and for both skill directories at once, in `tests/repo_skills.rs`. Every skill must declare a `name:` matching its directory and a description containing a sentence that starts `Use `, saying *when* to invoke it rather than only what it does; a description with no trigger clause is unreachable except by typing the slash command. A skill that does not fit that convention should gain the clause, not the check gain a branch — the predicate was an eight-way list of accepted phrasings once, which was a transcription of the corpus rather than a rule. Body assertions stay in `src/setup/plugins.rs`, which reads the embedded copy.
+
+`.claude/skills/` is a separate, unrelated path: a plain tracked directory Claude Code auto-discovers for any session inside this repo, with no build or install step. It is held to the same frontmatter contract as `plugin/skills/`, by the same code. **A skill in either must be a directory containing `SKILL.md`** — a bare `.md` file sitting directly under the skills directory is never loaded, and nothing about it looks wrong.
 
 ## Agent Working Directory
 

@@ -16,6 +16,33 @@ fn repo_file(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
+/// The Dependabot review prompt and the feed that creates its tasks must not
+/// both check the PR author. `fetch-dependabot.sh` lists PRs with
+/// `--author app/kognic-renovate`, so a dependabot task exists only for a PR
+/// that already passed that filter — an agent re-deriving it spends a `gh` call
+/// on a check that can only ever agree.
+///
+/// Pinned from both sides: if the feed ever drops its author filter, this fails
+/// and the prompt's "do not re-check" instruction stops being true.
+#[test]
+fn dependabot_prompt_does_not_re_check_the_author_the_feed_already_filtered() {
+    let feed = repo_file("scripts/fetch-dependabot.sh");
+    assert!(
+        feed.contains("--author app/kognic-renovate"),
+        "the feed must filter by bot author for the prompt's skipped check to be safe"
+    );
+
+    let prompt = repo_file("src/dispatch/prompts/dependabot.md");
+    assert!(
+        !prompt.contains("commits[].authors[].login"),
+        "the prompt must not re-derive the author the feed already filtered on"
+    );
+    assert!(
+        prompt.contains("Do not re-check the PR author"),
+        "the prompt must say why the author check is absent, or the next author will re-add it"
+    );
+}
+
 #[test]
 fn dependabot_alert_feed_scripts_default_wrap_up_mode_to_pr() {
     for script in ["scripts/fetch-cve.sh", "scripts/fetch-security.sh"] {

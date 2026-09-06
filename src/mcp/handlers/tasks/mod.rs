@@ -464,6 +464,50 @@ mod tests {
         );
     }
 
+    /// rule-guidance.GetTaskViaMcp ("The tool description names the response
+    /// shape"). The description quotes the labels a wrapping-up agent reads.
+    /// Those labels are inline `format!` literals in `format_task_detail`, so
+    /// pinning them as prose on both sides would let a rename go stale on one
+    /// side with the test still green. Instead: render a task carrying all of
+    /// them, harvest every single-quoted label out of the live description, and
+    /// require each to appear in the render. Rename a label in the renderer and
+    /// this fails until the description follows.
+    #[test]
+    fn get_task_description_quotes_only_labels_the_renderer_emits() {
+        let mut task = make_task("main");
+        task.wrap_up_mode = Some(crate::models::WrapUpMode::Rebase);
+        let output = format_task_detail(&task, &HashMap::new(), Some("cargo test"));
+
+        let defs = crate::mcp::handlers::dispatch::tool_definitions();
+        let desc = defs["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .find(|t| t["name"] == "get_task")
+            .expect("get_task must be advertised")["description"]
+            .as_str()
+            .expect("description is a string")
+            .to_string();
+
+        let quoted: Vec<&str> = desc
+            .split('\'')
+            .skip(1)
+            .step_by(2)
+            .filter(|q| *q != "Label: value")
+            .collect();
+        assert!(
+            !quoted.is_empty(),
+            "get_task's description must quote the labels it points the agent at, got: {desc}"
+        );
+        for label in quoted {
+            assert!(
+                output.contains(label),
+                "get_task's description quotes '{label}', which format_task_detail never \
+                 emits — the description has gone stale. Rendered:\n{output}"
+            );
+        }
+    }
+
     #[test]
     fn format_task_detail_omits_verify_command_when_unset() {
         let task = make_task("main");

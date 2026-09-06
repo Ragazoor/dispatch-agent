@@ -1,6 +1,6 @@
 ---
 name: learnings
-description: Manage the knowledge base lifecycle — query, rate, and record entries. Use at wrap-up or whenever you want to contribute to the shared knowledge base.
+description: Manage the knowledge base lifecycle — query entries, rate the ones you acted on, record new ones, and delete those that turned out wrong. Use at wrap-up or whenever you want to contribute to the shared knowledge base.
 ---
 
 # Knowledge Base

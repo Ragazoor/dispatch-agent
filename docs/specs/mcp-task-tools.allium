@@ -17,6 +17,23 @@ use "./core.allium" as core
 -- Rules
 ------------------------------------------------------------
 
+-- == Tool descriptions ==
+--
+-- A tool's `description` and its arguments' descriptions are an agent-facing
+-- surface, held to the same standard as the specs and docs: they state
+-- behaviour, and they name no code. A description may name a tool, an argument
+-- or a setting the caller passes — that is public interface — but never the
+-- function, type, macro or file behind it. Two reasons the bar is *higher*
+-- here than in docs/: check-doc-symbols.sh scans src/ for doc comments only
+-- (`///` and `//!`), so a description — a string literal — is invisible to it
+-- and nothing re-checks a citation that goes stale; and a description reaches
+-- an agent mid-task, where it is acted on rather than read.
+--
+-- Individual rules below add their own description guarantees where a wrong or
+-- missing sentence has a named consequence. Those are asserted in tests, and
+-- derived from the generated schema wherever the fact has a machine-readable
+-- source, so the description cannot drift from the tool it describes.
+
 -- == MCP Task Tools ==
 
 rule UpdateTaskViaMcp {
@@ -157,9 +174,18 @@ rule UpdateTaskViaMcp {
     @guidance
         -- MCP update_task accepts status, sub_status, plan_path, title,
         -- description, repo_path, sort_order, url, url_type, tag, epic_id,
-        -- base_branch, wrap_up_mode, and phoenix. It does NOT accept
-        -- worktree or tmux_window — those are owned by the dispatch flow
+        -- base_branch, wrap_up_mode, auto_run_plan, and phoenix. It does NOT
+        -- accept worktree or tmux_window — those are owned by the dispatch flow
         -- and never set via MCP.
+        --
+        -- == The tool description enumerates every field it accepts ==
+        -- update_task's description opens with that list, in full, and it is
+        -- the first thing a caller reads. The list drifted once — it named
+        -- eight of the fifteen fields and still called the typed url pair "PR
+        -- fields" — and an unadvertised field is one a caller reaches for a
+        -- second tool to do, or does not do at all. The list is asserted
+        -- against the generated schema rather than reviewed by eye, so a field
+        -- added to the argument set fails until the description learns it.
         -- wrap_up_mode can be set to "rebase", "pr", or "done" to pre-set
         -- the wrap-up action for the task. Pass null explicitly to clear it
         -- (omitting the field is a no-op).
@@ -604,6 +630,19 @@ rule GetTaskViaMcp {
         -- An unknown task_id is a not-found condition, not a validation one:
         -- ServiceError::NotFound surfaces as the -32001 not-found code, the
         -- same mapping every other NotFound uses (see CreateTaskViaMcp).
+        --
+        -- == The tool description names the response shape ==
+        -- The description states that the response is labelled prose — one
+        -- "Label: value" line per field, not JSON — and that a line is
+        -- rendered only when its field is set, so an absent line means unset
+        -- rather than empty. It names the three lines a wrapping-up agent
+        -- reads: Base branch, Verify command and Wrap-up mode.
+        --
+        -- Saying so is not decoration. The response is the only labelled-prose
+        -- payload in the tool set, and agents that assumed JSON went looking
+        -- for snake_case keys that never appear — a failure that costs the
+        -- reader the verify command specifically, because that line is the one
+        -- with no second source in the prompt.
         -- Handled by handle_get_task in src/mcp/handlers/tasks/crud.rs.
 }
 
@@ -635,6 +674,13 @@ rule ListTasksViaMcp {
         --     / "Security Alert" / "Link"
         --   | Goal: <plan goal>  (from **Goal:** line in plan file; falls back to
         --                         description preview ≤200 chars when plan absent/unreadable)
+        --
+        -- == The tool description names every url label, not just PR ==
+        -- The url line is typed, so three of the four labels are not "PR". The
+        -- description names all four rather than describing the output as a PR
+        -- url, which is what it said while the url field was PR-only: a caller
+        -- who scans for the word "PR" on a security-alert or issue task finds
+        -- nothing and concludes the task carries no link.
         -- Implemented in handle_list_tasks (src/mcp/handlers/tasks/crud.rs).
 }
 
@@ -1088,6 +1134,17 @@ rule SetVerifyCommandViaMcp {
         -- back as its "Verify before exiting" line (see WrapUpRebase in
         -- pr-workflow.allium). Recording a verify command is an explicit act by
         -- an agent or operator (see the `dispatch repo set-verify` CLI above).
+        --
+        -- == The tool description does not claim prompt injection ==
+        -- The description states that the command never appears in a dispatch
+        -- prompt, and names the two surfaces that do carry it: get_task's
+        -- "Verify command" line and the wrap_up response's "Verify before
+        -- exiting" reminder. It said the opposite for a time — that the command
+        -- was injected into future agent prompts — which contradicts the
+        -- prompt-assembly rule in dispatch.allium and sends the one reader who
+        -- needs the command looking on the single surface that never carries
+        -- it. A description that disagrees with the prompt rule is a defect in
+        -- the description, not a second opinion.
         -- Handled by handle_set_verify_command in
         -- src/mcp/handlers/tasks/verify.rs.
 }

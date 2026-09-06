@@ -1,6 +1,6 @@
 ---
 name: wrap-up
-description: Use to finish a dispatch task and close its session — whenever work in a dispatch worktree is complete and the user says to wrap up, finish, close out, finalise, or "we're done here", even if they don't name this skill. Commits remaining changes, then takes one of three paths chosen by the user: rebase onto the task's base_branch (dispatch-driven), author and open a draft GitHub PR yourself (you write the title and body), or done with no git operations. Always use this rather than calling wrap_up/exit_session by hand — the retro step must run before the commit and the two closing calls have an ordering that is easy to get wrong.
+description: Use to finish a dispatch task and close its session — whenever work in a dispatch worktree is complete and the user says to wrap up, finish, close out, finalise, or "we're done here", even if they don't name this skill. The user first chooses one of three paths: rebase onto the task's base_branch (dispatch-driven), author and open a draft GitHub PR yourself (you write the title and body), or done with no git operations. It then runs the retro, commits remaining changes, and runs the repo's verify command before any git operation touches a shared branch. Always use this rather than calling wrap_up/exit_session by hand — the path must be settled before the retro, the retro must run before the commit, and the two closing calls have an ordering that is easy to get wrong.
 ---
 
 # Wrap Up
@@ -190,7 +190,7 @@ When you get it:
 
 When dispatch starts an agent, it injects relevant knowledge into the prompt under "## Validated knowledge for this task". You may also call `query_learnings` mid-task. Each surfacing is recorded as a retrieval, and the knowledge base learns which entries are useful from your ratings.
 
-Rate via the `rate_learning` MCP tool — ideally the moment you act on an entry, or at the latest before you wrap up. For every learning you acted on that was surfaced to you this task:
+Rate via the `rate_learning` MCP tool at the moment you act on an entry, not here — see the `learnings` skill. This step is the backstop: for anything you acted on this task and have not yet rated, rate it now.
 
 ```
 rate_learning(learning_id=<id>, task_id=<id>, verdict="helped")
@@ -239,7 +239,7 @@ Avoid `wip:`, `task #N:`, or anything that just restates the task title. The tit
 ## Summary
 
 - **Bug Fixes**
-  - {user-visible change and why it matters, plain language, under 20 words where possible}
+  - {user-visible change and why it matters, in plain language}
 - **Documentation**
   - {user-visible change and why it matters}
 ```

@@ -143,8 +143,14 @@ pub fn serialize_embedding(v: &[f32]) -> Vec<u8> {
 }
 
 pub fn deserialize_embedding(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    // `as_chunks` over `chunks_exact(4)`: it yields `&[u8; 4]` directly, so
+    // `from_le_bytes` takes it without the four-way index dance, and a trailing
+    // partial chunk is still dropped. Rust 1.98's
+    // `clippy::chunks_exact_to_as_chunks` warns on the old form.
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 

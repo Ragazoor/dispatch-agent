@@ -1,5 +1,12 @@
 ---
-description: "Drive the Allium spec-first convergence loop (Loop A) from a spec/design document: dispatch a fresh agent each run to tend the spec, propagate tests, implement to green, and weed, repeating until converged"
+name: allium-loop
+description: >-
+  Drive the Allium spec-first convergence loop (Loop A) from a spec or design
+  document: dispatch a fresh agent each run to tend the spec, propagate tests,
+  implement to green, and weed, repeating until converged. Use when a spec is
+  written and the tend/propagate/implement/weed cycle is too large or too
+  stubborn to run inline — many obligations, or a convergence that has already
+  stalled once — and when the user asks to run the allium loop.
 allowed-tools: ["Read", "Write", "Bash", "Agent", "AskUserQuestion"]
 ---
 
